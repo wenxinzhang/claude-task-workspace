@@ -1,0 +1,275 @@
+/* 观察者特有样式；其余复用 styles.css 既有类（pill/table/chip-tabs/logs/empty-state） */
+/* 与 records-page/projects-page 同一布局契约：.page 本身无内边距，页面自带 padding 与独立滚动 */
+.observer-page {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 22px 28px 32px;
+}
+.observer-page > .muted {
+  max-width: 820px;
+}
+.observer-status {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+.nav-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+.btn-sm {
+  padding: 2px 10px;
+  font-size: 12px;
+}
+.observer-empty {
+  padding: 20px 24px;
+}
+.observer-empty p {
+  margin: 0 0 6px;
+}
+.observer-empty p:last-child {
+  margin-bottom: 0;
+}
+.obs-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+}
+/* 用在表格单元格上时不能变成弹性盒：那样它不再是表格单元格，高度不随整行撑开，
+   比同行其他格矮一截，选中或悬停时底色填不满。保持单元格，按钮靠右、用外边距隔开 */
+td.obs-actions {
+  display: table-cell;
+  text-align: right;
+  white-space: nowrap;
+}
+td.obs-actions .btn + .btn {
+  margin-left: 6px;
+}
+.obs-detail {
+  margin-top: 12px;
+}
+.proposal-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-bottom: 10px;
+  max-width: 1100px;
+  background: var(--card);
+}
+.proposal-card.failed {
+  border-color: var(--err);
+}
+.proposal-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+  flex-wrap: wrap;
+}
+.proposal-title {
+  font-weight: 600;
+}
+.comp-badge {
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+}
+.comp-gate {
+  border-color: var(--err);
+  color: var(--err-text);
+}
+.probe-line {
+  padding: 0 14px 8px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.proposal-actions {
+  padding: 0 14px 10px;
+  justify-content: flex-start;
+}
+.proposal-body {
+  padding: 10px 14px 14px;
+  border-top: 1px solid var(--line-soft);
+}
+.diff-pair {
+  margin: 10px 0;
+}
+.diff-file {
+  font-size: 12px;
+  margin-bottom: 4px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.diff-block {
+  padding: 8px 0;
+  max-height: 420px;
+}
+.diff-line {
+  display: block;
+  padding: 0 12px;
+}
+.diff-sign {
+  display: inline-block;
+  width: 1.4em;
+  color: var(--muted);
+  user-select: none;
+}
+.diff-same {
+  color: var(--muted);
+}
+.diff-del {
+  background: var(--err-bg);
+  color: var(--err-text);
+}
+.diff-add {
+  background: var(--ok-bg);
+  color: var(--ok-text);
+}
+/* 确认面板贴在卡片里：左侧色条提示「这一步有副作用」 */
+.confirm-panel {
+  margin: 0 14px 12px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--warn);
+  background: var(--warn-bg);
+  border-radius: 0 8px 8px 0;
+}
+.confirm-panel p {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.confirm-panel .obs-actions {
+  justify-content: flex-start;
+}
+.proposal-meta {
+  padding: 0 14px 10px;
+  font-size: 12.5px;
+}
+.proposal-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 14px 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--err-bg);
+  color: var(--err-text);
+  font-size: 13px;
+}
+.proposal-note span {
+  flex: 1;
+  min-width: 0;
+}
+.proposal-field {
+  margin-bottom: 10px;
+}
+.proposal-field p,
+.proposal-problems {
+  margin: 2px 0 0;
+  line-height: 1.65;
+}
+.proposal-problems {
+  padding-left: 18px;
+}
+.proposals-done-toggle {
+  margin: 8px 0 12px;
+}
+.proposals-clear {
+  margin-left: 12px;
+}
+
+/* ---------- 流程体检 ---------- */
+.flow-health {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 12px;
+  margin: 16px 0 20px;
+}
+.flow-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 14px 16px;
+  min-width: 0;
+}
+.flow-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.flow-none {
+  margin: 0 0 8px;
+}
+.flow-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.flow-table th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--muted);
+  padding: 4px 8px 4px 0;
+  white-space: nowrap;
+}
+.flow-table td {
+  padding: 5px 8px 5px 0;
+  border-top: 1px solid var(--line-soft);
+  white-space: nowrap;
+}
+.flow-table .num {
+  text-align: right;
+  padding-right: 0;
+}
+/* 耗时条：同一项目三个阶段按中位耗时等比，一眼看出时间花在哪 */
+.flow-bar {
+  display: inline-block;
+  width: 72px;
+  height: 6px;
+  margin-right: 8px;
+  border-radius: 3px;
+  background: var(--gray-bg);
+  vertical-align: middle;
+  overflow: hidden;
+}
+.flow-bar i {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+}
+.flow-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.flow-fact {
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--gray-bg);
+  color: var(--gray-text);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.flow-fact.warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}

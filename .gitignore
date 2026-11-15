@@ -1,0 +1,22 @@
+# 依赖与构建产物
+node_modules/
+dist/
+
+# 运行数据：任务、项目配置、飞书与 Git 凭据都在这里，绝不提交
+data/
+
+# 本机开发用的配置与文档，不属于这个工具本身
+.claude/
+CLAUDE.md
+docs/
+docx/
+skill-runtime/
+
+# 一次性脚本、预览截图、测试用的临时数据
+scratch/
+qa/
+scripts/
+
+.env
+.env.*
+*.log
