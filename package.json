@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "从飞书多维表格导入任务，由 Claude Code 串行执行与测试的本地看板",
+  "license": "MIT",
   "scripts": {
     "dev": "concurrently -n server,web -c green,cyan \"tsx watch server/index.ts\" \"vite\"",
     "build": "vite build",
