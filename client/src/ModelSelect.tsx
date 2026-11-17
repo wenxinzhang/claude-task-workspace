@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type Settings } from './api.ts';
+import { SaveStatus, useAutoSave } from './useAutoSave.tsx';
 
 type Msg = { text: string; error?: boolean } | null;
 
@@ -88,11 +89,20 @@ export function ModelsSettings() {
   const [list, setList] = useState<string[] | null>(null);
   const [name, setName] = useState('');
   const [msg, setMsg] = useState<Msg>(null);
-  // 取到服务端清单后才开始编辑；之后以本地为准，直到保存
+  // 取到服务端清单后才开始编辑；之后以本地为准，增删后立即自动保存
   useEffect(() => {
     if (saved && list === null) setList(saved);
   }, [saved, list]);
-  const dirty = !!saved && !!list && saved.join('\n') !== list.join('\n');
+  const state = useAutoSave(
+    list,
+    async (l) => {
+      const s = await api<Settings>('/api/settings', 'PUT', { models: l });
+      // 服务端还是不认识模型清单的旧版本时，返回里没有这个字段：不能当成保存成功
+      if (!Array.isArray(s.models)) throw new Error('服务端没有保存模型清单，请重启看板服务后再试');
+      publish(s.models);
+    },
+    0,
+  );
 
   const add = () => {
     const v = name.trim();
@@ -104,23 +114,8 @@ export function ModelsSettings() {
     setMsg(null);
   };
 
-  const save = async (ev: React.FormEvent) => {
-    ev.preventDefault();
-    if (!list) return;
-    try {
-      const s = await api<Settings>('/api/settings', 'PUT', { models: list });
-      // 服务端还是不认识模型清单的旧版本时，返回里没有这个字段：不能当成保存成功
-      if (!Array.isArray(s.models)) throw new Error('服务端没有保存模型清单，请重启看板服务后再试');
-      publish(s.models);
-      setList(s.models);
-      setMsg({ text: '已保存' });
-    } catch (e) {
-      setMsg({ text: (e as Error).message, error: true });
-    }
-  };
-
   return (
-    <form className="settings" onSubmit={save}>
+    <section className="settings">
       <h2 className="bar-title">可用模型</h2>
       <p className="muted">
         各项目「执行设置」和「观察者」里的模型下拉框从这份清单里选。名称要和你的代理命令（claude / codex）认识的模型名完全一致，会原样作为模型参数传过去；这里不检查名称在你的模型服务上是否存在。
@@ -141,7 +136,10 @@ export function ModelsSettings() {
             {list.map((m) => (
               <span key={m} className="chip">
                 {m}
-                <button type="button" aria-label={`移除 ${m}`} onClick={() => setList(list.filter((x) => x !== m))}>
+                <button type="button" aria-label={`移除 ${m}`} onClick={() => {
+                    setList(list.filter((x) => x !== m));
+                    setMsg(null);
+                  }}>
                   ×
                 </button>
               </span>
@@ -166,14 +164,10 @@ export function ModelsSettings() {
             </button>
           </div>
           <div className="actions">
-            {msg ? <span className={msg.error ? 'error' : 'muted'}>{msg.text}</span> : dirty && <span className="muted">有未保存的修改</span>}
-            <span className="grow" />
-            <button className="btn btn-primary" disabled={!dirty}>
-              保存
-            </button>
+            {msg ? <span className="error">{msg.text}</span> : <SaveStatus state={state} />}
           </div>
         </>
       )}
-    </form>
+    </section>
   );
 }

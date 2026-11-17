@@ -3,6 +3,7 @@ import { SkillSettings } from './SkillSettings.tsx';
 import { ModelSelect } from './ModelSelect.tsx';
 import { api, DEFAULT_ENV, type DeployEnv, type ExecConfig, type Project, type RepoInfo, type Settings } from './api.ts';
 import { Icon } from './Icon.tsx';
+import { SaveStatus, useAutoSave } from './useAutoSave.tsx';
 
 type Msg = { text: string; error?: boolean } | null;
 
@@ -328,21 +329,16 @@ export function ProjectSettings({ project }: { project: Project }) {
   const f = form.feishu;
   const setFeishu = <K extends keyof Project['feishu']>(k: K, v: Project['feishu'][K]) => setForm({ ...form, feishu: { ...f, [k]: v } });
 
-  const save = async (ev: React.FormEvent) => {
-    ev.preventDefault();
-    try {
-      const saved = await api<Project>(`/api/projects/${project.id}`, 'PUT', {
-        name: form.name,
-        workdir: form.workdir,
-        feishu: form.feishu,
-        envs: form.envs,
-      });
-      setForm(saved);
-      setMsg({ text: '已保存' });
-    } catch (err) {
-      setMsg({ text: (err as Error).message, error: true });
-    }
-  };
+  // 项目名称、工作目录、飞书链接改完自动保存。飞书面板打开期间不存：面板有「取消」，要等它保存或退回。
+  // 工作目录要在本机存在才存得进去，输入到一半会被拒，停顿久一点再存
+  const basic = drawer === 'feishu' ? null : { name: form.name, workdir: form.workdir, url: f.url };
+  const autoState = useAutoSave(
+    basic,
+    async (b) => {
+      await api<Project>(`/api/projects/${project.id}`, 'PUT', { name: b.name, workdir: b.workdir, feishu: { url: b.url } });
+    },
+    1000,
+  );
 
   const detect = () =>
     api<{ repo: RepoInfo | null }>(`/api/projects/${project.id}/git`).then(
@@ -366,10 +362,7 @@ export function ProjectSettings({ project }: { project: Project }) {
     }
   };
 
-  /**
-   * 部署环境的增、改、删都直接存到服务端：面板里点了「保存」就是保存了，不用再点页面底部的「保存设置」。
-   * 只提交环境这一项，页面上没保存的项目名称、工作目录不会被顺带存进去
-   */
+  /** 部署环境的增、改、删都直接存到服务端：面板里点了「保存」就是保存了。只提交环境这一项 */
   const saveEnvs = async (envs: DeployEnv[], done: string) => {
     const saved = await api<Project>(`/api/projects/${project.id}`, 'PUT', { envs });
     setForm((fm) => ({ ...fm, envs: saved.envs }));
@@ -415,15 +408,15 @@ export function ProjectSettings({ project }: { project: Project }) {
   };
 
   return (
-    <form className="settings" onSubmit={save}>
+    <section className="settings">
       <h2 className="bar-title">基本信息</h2>
       <div className="field-row">
         <span className="field-label">项目名称</span>
-        <input value={form.name} onChange={(ev) => setForm({ ...form, name: ev.target.value })} required />
+        <input value={form.name} onChange={(ev) => setForm({ ...form, name: ev.target.value })} />
       </div>
       <div className="field-row">
         <span className="field-label">本地工作目录</span>
-        <input value={form.workdir} onChange={(ev) => setForm({ ...form, workdir: ev.target.value })} placeholder="例如 E:\workspace\my-project" required />
+        <input value={form.workdir} onChange={(ev) => setForm({ ...form, workdir: ev.target.value })} placeholder="例如 E:\workspace\my-project" />
         <button type="button" className="btn btn-outline-primary" onClick={() => setBrowse(true)}>
           浏览
         </button>
@@ -498,17 +491,12 @@ export function ProjectSettings({ project }: { project: Project }) {
           <Icon name="plus" /> 添加环境
         </button>
       </div>
-      <small className="muted field-note">第一项为默认环境，顶栏不选环境时部署到它。环境在编辑面板里点「保存」后立即生效，不用再点下面的「保存设置」。</small>
+      <small className="muted field-note">第一项为默认环境，顶栏不选环境时部署到它。环境在编辑面板里点「保存」后立即生效。</small>
 
       <div className="actions settings-foot">
         {msg && <span className={msg.error ? 'error' : 'ok-text'}>{msg.text}</span>}
         <span className="grow" />
-        <button type="button" className="btn btn-outline" onClick={() => setForm(project)} title="放弃对项目名称、工作目录、飞书链接的修改">
-          取消
-        </button>
-        <button className="btn btn-primary" title="保存项目名称、工作目录和飞书链接">
-          保存设置
-        </button>
+        <SaveStatus state={autoState} />
       </div>
 
       {drawer === 'feishu' && (
@@ -622,33 +610,26 @@ export function ProjectSettings({ project }: { project: Project }) {
           onClose={() => setBrowse(false)}
         />
       )}
-    </form>
+    </section>
   );
 }
 
 /** 执行设置：按项目保存，在「项目管理 → 配置」里，与项目信息并列 */
 export function ExecSettings({ project }: { project: Project }) {
   const [e, setE] = useState<ExecConfig>(project.exec);
-  const [msg, setMsg] = useState<Msg>(null);
   // 只在切换项目时重置；SSE 推送项目变化时不覆盖正在编辑的内容
   useEffect(() => {
     setE(project.exec);
-    setMsg(null);
   }, [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const setExec = <K extends keyof ExecConfig>(k: K, v: ExecConfig[K]) => setE({ ...e, [k]: v });
 
-  const save = async (ev: React.FormEvent) => {
-    ev.preventDefault();
-    try {
-      await api<Project>(`/api/projects/${project.id}`, 'PUT', { exec: e });
-      setMsg({ text: '已保存' });
-    } catch (err) {
-      setMsg({ text: (err as Error).message, error: true });
-    }
-  };
+  // 改完自动保存：勾选、下拉立即生效，输入框停顿后保存
+  const state = useAutoSave(e, async (v) => {
+    await api<Project>(`/api/projects/${project.id}`, 'PUT', { exec: v });
+  });
 
   return (
-    <form className="settings" onSubmit={save}>
+    <section className="settings">
       <h2 className="bar-title">代理与权限</h2>
       <label>
         编码代理
@@ -814,11 +795,9 @@ export function ExecSettings({ project }: { project: Project }) {
       </label>
 
       <div className="actions">
-        {msg && <span className={msg.error ? 'error' : 'muted'}>{msg.text}</span>}
-        <span className="grow" />
-        <button className="btn btn-primary">保存执行设置</button>
+        <SaveStatus state={state} />
       </div>
-    </form>
+    </section>
   );
 }
 
@@ -866,7 +845,7 @@ function VerifyCommands({ projectId, value, onChange }: { projectId: string; val
                 <button type="button" className="btn btn-outline sm" onClick={() => onChange(kit.commands.join('\n'))}>
                   采用这些命令
                 </button>
-                <small className="muted">采用后仍需点页面底部的「保存执行设置」。尖括号里的内容是说明，代理会换成实际的文件。</small>
+                <small className="muted">采用后自动保存。尖括号里的内容是说明，代理会换成实际的文件。</small>
               </span>
             </>
           ) : (
@@ -943,78 +922,26 @@ export function NewProjectDialog({ onClose, onCreated }: { onClose: () => void; 
   );
 }
 
-/** 全局 Obsidian 知识库：门禁通过后按库内约定写入修复经验 */
-export function VaultSettings() {
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [msg, setMsg] = useState<Msg>(null);
-  useEffect(() => {
-    api<Settings>('/api/settings').then(setSettings, (e) => setMsg({ text: e.message, error: true }));
-  }, []);
-  if (!settings) return <p className="muted">加载中…</p>;
-  const v = settings.vault;
-  const set = (patch: Partial<Settings['vault']>) => setSettings({ ...settings, vault: { ...v, ...patch } });
-
-  const save = async (ev: React.FormEvent) => {
-    ev.preventDefault();
-    try {
-      setSettings(await api<Settings>('/api/settings', 'PUT', { vault: v }));
-      setMsg({ text: '已保存' });
-    } catch (e) {
-      setMsg({ text: (e as Error).message, error: true });
-    }
-  };
-
-  return (
-    <form className="settings" onSubmit={save}>
-      <h2 className="bar-title">知识库（Obsidian）</h2>
-      <p className="muted">
-        门禁通过后提炼一条修复经验，按知识库「00-使用约定」写入：跨项目经验进 30-技术经验、只对本项目成立的进 40-项目档案、拿不准进 90-收件箱；同名条目更新不新建，新条目在 00-索引 加一行。与项目记忆共用各项目的「积累项目知识」开关。
-      </p>
-      <label className="check">
-        <input type="checkbox" checked={v.enabled} onChange={(ev) => set({ enabled: ev.target.checked })} />
-        门禁通过后把修复经验写入知识库
-      </label>
-      <label>
-        知识库目录
-        <input value={v.path} onChange={(ev) => set({ path: ev.target.value })} placeholder="例如 D:\Notes\Claude" />
-        <small className="muted">目录里需要有 00-索引.md。写入失败只记日志，不影响任务结果。</small>
-      </label>
-      <div className="actions">
-        {msg && <span className={msg.error ? 'error' : 'muted'}>{msg.text}</span>}
-        <span className="grow" />
-        <button className="btn btn-primary">保存</button>
-      </div>
-    </form>
-  );
-}
-
-/** 全局 skill 库：这个目录下 .claude/skills 里的 skill，所有项目的代理都能用 */
+/** 全局 skill 库：这个目录下 .claude/skills 里的 skill，所有项目的代理都能用。改完自动保存 */
 export function SkillLibrarySettings() {
   const [dir, setDir] = useState<string | null>(null);
   const [info, setInfo] = useState<{ dir: string; problem: string; skills: { name: string; description: string }[] } | null>(null);
-  const [msg, setMsg] = useState<Msg>(null);
+  const [loadErr, setLoadErr] = useState('');
   const loadInfo = () => api<{ dir: string; problem: string; skills: { name: string; description: string }[] }>('/api/skills/library').then(setInfo, () => setInfo(null));
   // 输入框改了还没保存时，检查结果对应的是旧目录，不显示
   const saved = !!info && info.dir === (dir ?? '').trim();
   useEffect(() => {
-    api<Settings>('/api/settings').then((s) => setDir(s.skills.libraryDir), (e) => setMsg({ text: e.message, error: true }));
+    api<Settings>('/api/settings').then((s) => setDir(s.skills.libraryDir), (e) => setLoadErr((e as Error).message));
     void loadInfo();
   }, []);
-
-  const save = async (ev: React.FormEvent) => {
-    ev.preventDefault();
-    try {
-      const s = await api<Settings>('/api/settings', 'PUT', { skills: { libraryDir: dir ?? '' } });
-      setDir(s.skills.libraryDir);
-      setMsg({ text: '已保存' });
-      void loadInfo();
-    } catch (e) {
-      setMsg({ text: (e as Error).message, error: true });
-    }
-  };
+  // 目录要在本机存在才存得进去，输入到一半时会提示错误，停顿久一点再存
+  const state = useAutoSave(dir, async (d) => {
+    await api<Settings>('/api/settings', 'PUT', { skills: { libraryDir: d } });
+    void loadInfo();
+  }, 1000);
 
   return (
-    <form className="settings" onSubmit={save}>
+    <section className="settings">
       <h2 className="bar-title">Skill 库</h2>
       <p className="muted">
         代理修任务时能用的 skill 来自三处：目标项目代码目录下的 .claude/skills、这里指定的 skill 库、本机用户目录的 ~/.claude/skills。
@@ -1022,7 +949,7 @@ export function SkillLibrarySettings() {
         每次任务开始时系统只把库里的 skill 复制一份给代理：代理改不到库里的原件，库目录下别的文件（配置、钩子、数据）也不会交给它。
       </p>
       {dir === null ? (
-        <p className="muted">加载中…</p>
+        <p className={loadErr ? 'error' : 'muted'}>{loadErr || '加载中…'}</p>
       ) : (
         <label>
           skill 库目录
@@ -1036,44 +963,36 @@ export function SkillLibrarySettings() {
           库里有 {info.skills.length} 个 skill：{info.skills.map((s) => s.name).join('、')}
         </small>
       )}
-      <div className="actions">
-        {msg && <span className={msg.error ? 'error' : 'muted'}>{msg.text}</span>}
-        <span className="grow" />
-        <button className="btn btn-primary">保存</button>
-      </div>
-    </form>
+      {dir !== null && (
+        <div className="actions">
+          <SaveStatus state={state} />
+        </div>
+      )}
+    </section>
   );
 }
 
-/** 全局飞书应用凭证，所有项目共用 */
+/** 全局飞书应用凭证，所有项目共用。改完自动保存 */
 export function FeishuSettings() {
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [msg, setMsg] = useState<Msg>(null);
+  const [f, setF] = useState<Settings['feishu'] | null>(null);
+  const [loadErr, setLoadErr] = useState('');
   useEffect(() => {
-    api<Settings>('/api/settings').then(setSettings, (e) => setMsg({ text: e.message, error: true }));
+    api<Settings>('/api/settings').then((s) => setF(s.feishu), (e) => setLoadErr((e as Error).message));
   }, []);
-  if (!settings) return <p className="muted">加载中…</p>;
-  const f = settings.feishu;
-  const set = (k: keyof Settings['feishu'], v: string) => setSettings({ ...settings, feishu: { ...f, [k]: v } });
-
-  const save = async (ev: React.FormEvent) => {
-    ev.preventDefault();
-    try {
-      setSettings(await api<Settings>('/api/settings', 'PUT', { feishu: f }));
-      setMsg({ text: '已保存' });
-    } catch (e) {
-      setMsg({ text: (e as Error).message, error: true });
-    }
-  };
+  const state = useAutoSave(f, async (v) => {
+    await api<Settings>('/api/settings', 'PUT', { feishu: v });
+  });
+  if (!f) return <p className={loadErr ? 'error' : 'muted'}>{loadErr || '加载中…'}</p>;
+  const set = (k: keyof Settings['feishu'], v: string) => setF({ ...f, [k]: v });
 
   return (
-    <form className="settings" onSubmit={save}>
+    <section className="settings">
       <h2 className="bar-title">全局飞书连接</h2>
       <p className="muted">所有项目共用这个飞书自建应用读取多维表格、回写任务状态。凭证仅保存在本机 data/settings.json。各项目的表格链接在「项目管理 → 配置 → 项目信息」中配置。</p>
 
       <label>
         App ID
-        <input value={f.appId} onChange={(ev) => set('appId', ev.target.value)} placeholder="cli_xxxxxxxx" required />
+        <input value={f.appId} onChange={(ev) => set('appId', ev.target.value)} placeholder="cli_xxxxxxxx" />
       </label>
       <label>
         App Secret
@@ -1092,10 +1011,8 @@ export function FeishuSettings() {
       </div>
 
       <div className="actions">
-        {msg && <span className={msg.error ? 'error' : 'muted'}>{msg.text}</span>}
-        <span className="grow" />
-        <button className="btn btn-primary">保存</button>
+        <SaveStatus state={state} />
       </div>
-    </form>
+    </section>
   );
 }

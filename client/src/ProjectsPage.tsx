@@ -3,7 +3,7 @@ import { api, defaultEnv, type Project, type RepoInfo } from './api.ts';
 import { Icon } from './Icon.tsx';
 import { ObserverSettings } from './ObserverSettings.tsx';
 import { ModelsSettings } from './ModelSelect.tsx';
-import { ExecSettings, FeishuSettings, ProjectSettings, SkillLibrarySettings, VaultSettings } from './Settings.tsx';
+import { ExecSettings, FeishuSettings, ProjectSettings, SkillLibrarySettings } from './Settings.tsx';
 
 /** 项目管理页当前打开的内容：项目列表、全局设置，或某个项目的配置（项目信息 / 执行设置） */
 export type ManageTarget = { kind: 'list' } | { kind: 'global' } | { kind: 'project'; id: string; tab: 'info' | 'exec' };
@@ -21,7 +21,7 @@ interface Props {
 /**
  * 项目管理：项目的一切配置都从这里进。
  * 「项目」页签是所有项目的一览，点「配置」进入该项目的项目信息与执行设置；
- * 「全局设置」是所有项目共用的飞书连接、知识库、观察者。
+ * 「全局设置」是所有项目共用的飞书连接、skill 库、可用模型、观察者。
  */
 export function ProjectsPage({ projects, currentId, target, onTarget, onEnter, onCreate, onDeleted }: Props) {
   const [search, setSearch] = useState('');
@@ -86,7 +86,7 @@ export function ProjectsPage({ projects, currentId, target, onTarget, onEnter, o
         <header className="page-head">
           <div>
             <h1>{configuring.name}</h1>
-            <p className="muted">这个项目自己的配置。飞书应用凭证、知识库、观察者是所有项目共用的，在「全局设置」里。</p>
+            <p className="muted">这个项目自己的配置。飞书应用凭证、skill 库、可用模型、观察者是所有项目共用的，在「全局设置」里。</p>
           </div>
           {/* 已归档的项目进不去（会被带到别的项目），不显示入口 */}
           {!configuring.archived && (
@@ -141,7 +141,6 @@ export function ProjectsPage({ projects, currentId, target, onTarget, onEnter, o
       {global && (
         <>
           <FeishuSettings />
-          <VaultSettings />
           <SkillLibrarySettings />
           <ModelsSettings />
           <ObserverSettings />

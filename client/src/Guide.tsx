@@ -64,8 +64,8 @@ function buildSteps(projectId: string | null, go: Go): Step[] {
       title: '从配置到跑通一个任务',
       text: '接下来按顺序带你走一遍：\n① 全局设置：可用模型、飞书连接\n② 建项目，配置代码目录、飞书来源、Git、部署环境\n③ 执行设置：用哪个代理和模型、怎么验证、门禁与流转\n④ 同步任务 → 生成规格 → 加入队列 → 启动执行\n⑤ 看结果、推送代码、部署\n指引打开时页面照常可以操作，可以边看边填。',
     },
-    { title: '全局设置 · 可用模型', text: '添加你的代理命令（claude / codex）认识的模型名称，点「保存」。之后各项目的「模型」下拉框从这里选。\n不添加也能用：那样会使用代理命令自己的默认模型。', open: global, find: section('可用模型'), section: true },
-    { title: '全局设置 · 飞书连接', text: '填飞书自建应用的 App ID 和 App Secret，并按下面「权限准备」开通权限、把应用加为表格协作者，填好后点这一段右下角的「保存」。\n不从飞书导入任务的话，这一步可以不填。', open: global, find: section('全局飞书连接'), section: true },
+    { title: '全局设置 · 可用模型', text: '添加你的代理命令（claude / codex）认识的模型名称，添加后自动保存。之后各项目的「模型」下拉框从这里选。\n不添加也能用：那样会使用代理命令自己的默认模型。', open: global, find: section('可用模型'), section: true },
+    { title: '全局设置 · 飞书连接', text: '填飞书自建应用的 App ID 和 App Secret，并按下面「权限准备」开通权限、把应用加为表格协作者，填好后自动保存。\n不从飞书导入任务的话，这一步可以不填。', open: global, find: section('全局飞书连接'), section: true },
     { title: '添加项目', text: '点「添加项目」，填项目名称和代码目录（本机上的绝对路径）。一个项目对应一个代码目录和一个任务看板。\n建好之后，指引会接着讲这个项目的配置。', open: () => go('projects', { kind: 'list' }), find: one('.projects-page .page-head .btn-primary') },
   ];
   if (!projectId) return steps;
@@ -76,13 +76,13 @@ function buildSteps(projectId: string | null, go: Go): Step[] {
     { title: '项目信息 · 基本信息', text: '确认项目名称和本地工作目录。代理会在这个目录里读代码、改代码、跑测试。\n目录需要是 git 仓库，系统才能核对每个任务改了哪些文件。', open: info, find: section('基本信息'), section: true },
     { title: '项目信息 · 飞书来源', text: '填多维表格的链接，再点「编辑」设置：按哪个字段、哪些取值过滤要导入的记录，指派给谁的才导入，以及任务换阶段时要不要把状态回写到飞书。', open: info, find: section('飞书来源'), section: true },
     { title: '项目信息 · Git 仓库', text: '点「编辑」填远端仓库地址和账号密码（HTTPS 远端需要），点「检测仓库」确认代码目录是 git 仓库。\n同步远端和推送代码用的就是这里的配置。', open: info, find: section('Git 仓库'), section: true },
-    { title: '项目信息 · 部署环境', text: '点环境右边的「编辑」，填部署命令（必填才能部署），构建命令和健康检查地址按需要填。第一项是默认环境。\n在编辑面板里点「保存」就存好了。项目名称、工作目录、飞书链接改过的话，再点底部的「保存设置」。', open: info, find: section('部署环境'), section: true },
+    { title: '项目信息 · 部署环境', text: '点环境右边的「编辑」，填部署命令（必填才能部署），构建命令和健康检查地址按需要填。第一项是默认环境。\n在编辑面板里点「保存」就存好了。项目名称、工作目录、飞书链接改完自动保存。', open: info, find: section('部署环境'), section: true },
     { title: '执行设置 · 代理与模型', text: '选用哪个编码代理（Claude Code、Codex 或自定义命令），再设它的权限模式、允许的工具和模型。\n模型下拉里的选项来自全局设置的「可用模型」；验证阶段可以另选一个更快的模型。', open: exec, find: part('代理与权限', '编码代理', ['验证命令']), section: true },
     { title: '执行设置 · 验证与测试', text: '填验证命令（可点「检测建议」按代码目录自动给出）和测试命令，选验证方式；单次会话花费上限填 0 表示不限。\n测试命令填了之后，每个任务改完都会跑一遍，不通过就判未通过。', open: exec, find: part('代理与权限', '验证命令', ['单任务超时']), section: true },
     { title: '执行设置 · 超时与门禁', text: '设单任务和生成规格的超时。\n「门禁通过后」决定任务验证通过后去哪：直接标记为已通过，或先进待验证等你确认。不想让任务停在待验证等人确认，就勾选下面的那一项。', open: exec, find: part('代理与权限', '单任务超时'), section: true },
     { title: '执行设置 · 流转方式', text: '按需要勾选：规格生成后自动确认、待修改里有任务就自动开工、每天定时启动队列、每个任务新建分支、自动提交代码、积累项目知识。\n每一项下面的小字写了它具体怎么生效。', open: exec, find: part('流转方式', '规格生成后自动确认', ['Skill', '通用要求']), section: true },
     { title: '执行设置 · Skill', text: '指定各阶段一定要用或不许用的 skill；不指定时由代理自己判断。\n这一项只在编码代理选 Claude Code 时才有。', open: exec, find: part('流转方式', 'Skill', ['通用要求']), section: true },
-    { title: '执行设置 · 通用要求与保存', text: '「通用要求」会附加到每个任务的提示词里，例如要求新代码都补单元测试。\n执行设置这一页都填好后，点「保存执行设置」。', open: exec, find: part('流转方式', '通用要求') },
+    { title: '执行设置 · 通用要求', text: '「通用要求」会附加到每个任务的提示词里，例如要求新代码都补单元测试。\n执行设置这一页改完自动保存，底部会显示保存状态。', open: exec, find: part('流转方式', '通用要求') },
     { title: '把任务拿进来', text: '在任务收件箱点「手动飞书同步」，按刚才配置的过滤条件拉取表格里的记录。\n不用飞书的话，到任务看板的「批量操作 → 新建任务」手动建。', open: () => go('inbox'), find: one('.inbox-list-head') },
     {
       title: '生成规格并加入队列',

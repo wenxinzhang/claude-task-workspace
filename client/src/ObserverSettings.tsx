@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, PROVIDER_LABEL, type Settings } from './api.ts';
 import { ModelSelect } from './ModelSelect.tsx';
+import { SaveStatus, useAutoSave } from './useAutoSave.tsx';
 
 type Msg = { text: string; error?: boolean } | null;
 
@@ -16,26 +17,20 @@ export function ObserverSettings() {
   const setExec = (patch: Partial<Settings['observer']['exec']>) =>
     settings && setSettings({ ...settings, observer: { ...settings.observer, exec: { ...settings.observer.exec, ...patch } } });
 
-  const save = async (ev: React.FormEvent) => {
-    ev.preventDefault();
-    if (!settings) return;
-    try {
-      setSettings(await api<Settings>('/api/settings', 'PUT', { observer: settings.observer }));
-      setMsg({ text: '已保存' });
-    } catch (e) {
-      setMsg({ text: (e as Error).message, error: true });
-    }
-  };
+  // 改完自动保存：勾选、下拉立即生效，输入框停顿后保存
+  const state = useAutoSave(o ?? null, async (v) => {
+    await api<Settings>('/api/settings', 'PUT', { observer: v });
+  });
 
   return (
-    <form className="settings" onSubmit={save}>
+    <section className="settings">
       <h2 className="bar-title">观察者</h2>
       <p className="muted">
         观察自动运行暴露的工具问题（报错、门禁未过、集成失败等），异常轮次起只读会话复盘归因；问题积累到内置条件且队列空闲时自动诊断生成优化提案。
         提案经你确认后才应用：应用前自动备份，类型检查或测试不过自动回滚。诊断与复盘使用下方代理，独立于各项目的执行设置。
       </p>
       {!o ? (
-        <p className="muted">加载中…</p>
+        <p className={msg?.error ? 'error' : 'muted'}>{msg?.text ?? '加载中…'}</p>
       ) : (
         <>
           <label className="check">
@@ -70,12 +65,10 @@ export function ObserverSettings() {
             </label>
           )}
           <div className="actions">
-            {msg && <span className={msg.error ? 'error' : 'muted'}>{msg.text}</span>}
-            <span className="grow" />
-            <button className="btn btn-primary">保存</button>
+            <SaveStatus state={state} />
           </div>
         </>
       )}
-    </form>
+    </section>
   );
 }
