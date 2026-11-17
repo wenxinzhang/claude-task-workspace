@@ -1219,14 +1219,24 @@ textarea {
 }
 
 /* ---------- 看板 ---------- */
+/* 看板占满页面剩余高度，列在内部滚动。视口太矮时由 min-height 兜住，改为整页滚动 */
+.board-page {
+  display: flex;
+  flex-direction: column;
+}
 .workspace {
+  flex: 1;
+  min-height: 420px;
   display: flex;
   gap: 16px;
-  align-items: flex-start;
+  align-items: stretch;
 }
 .board-card {
   flex: 1;
   min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--panel);
@@ -1247,6 +1257,10 @@ textarea {
 .columns {
   display: grid;
   grid-template-columns: repeat(6, minmax(140px, 1fr));
+  /* 单行且不随内容长高：列高 = 看板剩余高度 */
+  grid-template-rows: minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
   gap: 10px;
   overflow-x: auto;
   padding-bottom: 4px;
@@ -1259,7 +1273,21 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 440px;
+  min-height: 0;
+}
+.column-cards {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* 留出执行中卡片 2px 外描边的位置，否则会被滚动容器裁掉 */
+  padding: 2px;
+  margin: -2px;
+}
+.column-cards .card {
+  flex: none;
 }
 .column header {
   display: flex;
@@ -1344,22 +1372,11 @@ textarea {
   flex-wrap: wrap;
   gap: 5px;
 }
-.col-more {
-  border: 0;
-  border-top: 1px solid var(--line-soft);
-  background: none;
-  color: var(--primary);
-  font-size: 12.5px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 8px 2px 0;
-  margin-top: auto;
-}
 .rail {
   width: 290px;
   flex: none;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -2346,6 +2363,19 @@ textarea {
   .record-detail,
   .rail {
     width: 100%;
+  }
+  /* 看板与右侧栏上下叠放：不再抢同一屏高度，看板给固定的可视高度，整页滚动 */
+  .workspace {
+    flex: none;
+    min-height: 0;
+  }
+  .board-card {
+    flex: none;
+    height: 70vh;
+    min-height: 420px;
+  }
+  .rail {
+    overflow-y: visible;
   }
   .field-label {
     width: 96px;

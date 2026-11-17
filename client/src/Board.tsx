@@ -25,8 +25,6 @@ const BOARD: { key: string; color: string; statuses: TaskStatus[] }[] = [
   { key: 'blocked', color: '#d64545', statuses: ['blocked'] },
 ];
 
-const PREVIEW = 3;
-
 /** 每一列在等什么：一句话写在列头下面 */
 const COLUMN_HINT: Record<string, string> = {
   pending_confirm: '看规格、回答问题，确认后排队',
@@ -51,7 +49,6 @@ export function Board({ project, tasks, queue, deploy, onConfigure, setOpenId }:
   const [notice, setNotice] = useState<{ text: string; error?: boolean } | null>(null);
   const [search, setSearch] = useState('');
   const [creating, setCreating] = useState(false);
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const now = useNow(!!queue.currentId);
   // 正在拖的卡片来自哪一列、鼠标停在哪一列：用来高亮能放下的列
   const [drag, setDrag] = useState<{ id: string; from: string } | null>(null);
@@ -74,7 +71,6 @@ export function Board({ project, tasks, queue, deploy, onConfigure, setOpenId }:
   useEffect(() => {
     setNotice(null);
     setSearch('');
-    setExpanded({});
   }, [project.id]);
 
   const bulk = async (path: string, label: string) => {
@@ -153,7 +149,6 @@ export function Board({ project, tasks, queue, deploy, onConfigure, setOpenId }:
           <div className="columns" style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(140px, 1fr))` }}>
             {columns.map((col) => {
               const items = filtered.filter((t) => col.statuses.includes(t.status)).sort((a, b) => a.order - b.order);
-              const show = expanded[col.key] ? items : items.slice(0, PREVIEW);
               const label = col.key === 'fixing' ? '修复中' : statusLabel(project, col.key as TaskStatus);
               return (
                 <section
@@ -182,7 +177,9 @@ export function Board({ project, tasks, queue, deploy, onConfigure, setOpenId }:
                       <small>{canDrop(col.key) ? '拖到这里' : '暂无任务'}</small>
                     </div>
                   ) : (
-                    show.map((t) => {
+                    // 列占满看板高度，卡片在列内滚动：屏幕高就多显示几张，屏幕矮也不会把页面撑出一屏
+                    <div className="column-cards">
+                    {items.map((t) => {
                       const running = queue.currentId === t.id;
                       const type = fieldOf(t.description, '类型');
                       const open = t.spec ? openQuestions(t.spec).length : 0;
@@ -238,12 +235,8 @@ export function Board({ project, tasks, queue, deploy, onConfigure, setOpenId }:
                           </div>
                         </button>
                       );
-                    })
-                  )}
-                  {items.length > PREVIEW && (
-                    <button className="col-more" onClick={() => setExpanded((x) => ({ ...x, [col.key]: !x[col.key] }))}>
-                      {expanded[col.key] ? '收起' : `查看全部 ${items.length} 项`} <Icon name="chevron" size={13} className={expanded[col.key] ? 'chev open' : 'chev'} />
-                    </button>
+                    })}
+                    </div>
                   )}
                 </section>
               );
