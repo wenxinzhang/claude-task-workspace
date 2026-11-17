@@ -884,6 +884,7 @@ export function NewProjectDialog({ onClose, onCreated }: { onClose: () => void; 
   const [workdir, setWorkdir] = useState('');
   const [url, setUrl] = useState('');
   const [err, setErr] = useState('');
+  const [browse, setBrowse] = useState(false);
 
   const submit = async (ev: React.FormEvent) => {
     ev.preventDefault();
@@ -895,6 +896,20 @@ export function NewProjectDialog({ onClose, onCreated }: { onClose: () => void; 
     }
   };
 
+  // 浏览时只显示目录弹窗，选完或取消后回到本弹窗；已填的内容留在 state 里不丢
+  if (browse) {
+    return (
+      <DirsDialog
+        onPick={(p) => {
+          setWorkdir(p);
+          setErr('');
+          setBrowse(false);
+        }}
+        onClose={() => setBrowse(false)}
+      />
+    );
+  }
+
   return (
     <div className="overlay" onClick={onClose}>
       <form className="dialog" role="dialog" aria-modal="true" aria-labelledby="new-project-title" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
@@ -904,8 +919,13 @@ export function NewProjectDialog({ onClose, onCreated }: { onClose: () => void; 
           <input autoFocus value={name} onChange={(e) => setName(e.target.value)} required />
         </label>
         <label>
-          代码目录（绝对路径）
-          <input value={workdir} onChange={(e) => setWorkdir(e.target.value)} placeholder="例如 E:\workspace\my-project" required />
+          代码目录
+          <span className="row">
+            <input className="grow" value={workdir} onChange={(e) => setWorkdir(e.target.value)} placeholder="点「浏览」选择，也可以直接填绝对路径" required />
+            <button type="button" className="btn btn-outline-primary" onClick={() => setBrowse(true)}>
+              浏览
+            </button>
+          </span>
         </label>
         <label>
           飞书多维表格链接（选填）
