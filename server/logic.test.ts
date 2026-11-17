@@ -91,15 +91,16 @@ describe('parseFeishuUrl', () => {
     const p = parseFeishuUrl(
       'https://example.feishu.cn/wiki/WikiToken0123456789abcdefghi?table=tblExample0000001&view=vewExample1',
     );
-    expect(p).toEqual({ kind: 'wiki', token: 'WikiToken0123456789abcdefghi', tableId: 'tblExample0000001', viewId: 'vewExample1' });
+    expect(p).toEqual({ kind: 'wiki', token: 'WikiToken0123456789abcdefghi', tableId: 'tblExample0000001', sheetId: undefined, viewId: 'vewExample1' });
   });
   it('解析 base 链接，view 可选', () => {
     const p = parseFeishuUrl('https://x.feishu.cn/base/AbC123?table=tbl1');
     expect(p.kind).toBe('base');
     expect(p.viewId).toBeUndefined();
   });
-  it('缺少 table 参数时报错', () => {
-    expect(() => parseFeishuUrl('https://x.feishu.cn/wiki/AbC123')).toThrow(/table/);
+  it('table 参数可以没有：电子表格页签的链接带的是 sheet，读取时再定位数据表', () => {
+    expect(parseFeishuUrl('https://x.feishu.cn/wiki/AbC123')).toEqual({ kind: 'wiki', token: 'AbC123', tableId: undefined, sheetId: undefined, viewId: undefined });
+    expect(parseFeishuUrl('https://x.feishu.cn/wiki/AbC123?from=from_copylink&sheet=4d4df8').sheetId).toBe('4d4df8');
   });
   it('非法链接报错', () => {
     expect(() => parseFeishuUrl('not a url')).toThrow();

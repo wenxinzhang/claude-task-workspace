@@ -13,7 +13,10 @@ const api = () => process.env.FEISHU_API_BASE ?? 'https://open.feishu.cn/open-ap
 export interface ParsedUrl {
   kind: 'wiki' | 'base';
   token: string;
-  tableId: string;
+  /** 链接里的 table 参数；从知识库或电子表格页签复制的链接通常不带，读取时再定位 */
+  tableId?: string;
+  /** 链接里的 sheet 参数：电子表格的页签 id，用来找到该页签内嵌的多维表格 */
+  sheetId?: string;
   viewId?: string;
 }
 
@@ -36,12 +39,11 @@ export function parseFeishuUrl(raw: string): ParsedUrl {
   }
   const m = url.pathname.match(/\/(wiki|base)\/([A-Za-z0-9]+)/);
   if (!m) throw new Error('仅支持 /wiki/... 或 /base/... 形式的多维表格链接');
-  const tableId = url.searchParams.get('table');
-  if (!tableId) throw new Error('链接中缺少 table 参数，请在多维表格中打开具体数据表后复制链接');
   return {
     kind: m[1] as 'wiki' | 'base',
     token: m[2],
-    tableId,
+    tableId: url.searchParams.get('table') || undefined,
+    sheetId: url.searchParams.get('sheet') || undefined,
     viewId: url.searchParams.get('view') ?? undefined,
   };
 }
@@ -120,33 +122,61 @@ export function appTokenFromBlockToken(blockToken: string): string {
   return blockToken.split('_')[0];
 }
 
-async function resolveAppToken(parsed: ParsedUrl, token: string): Promise<string> {
-  if (parsed.kind === 'base') return parsed.token;
+/** 要读写的数据表：多维表格的 app_token 加数据表 id */
+interface Target {
+  appToken: string;
+  tableId: string;
+}
+
+/** 由链接定位到数据表。链接不带 table 时：电子表格按 sheet 页签找，多维表格取第一张数据表 */
+async function resolveTarget(parsed: ParsedUrl, token: string): Promise<Target> {
+  if (parsed.kind === 'base') return withFirstTable(parsed.token, parsed.tableId, token);
   const data = await call<{ node: { obj_type: string; obj_token: string } }>(
     `/wiki/v2/spaces/get_node?token=${encodeURIComponent(parsed.token)}`,
     { token },
   );
   const { obj_type, obj_token } = data.node;
-  if (obj_type === 'bitable') return obj_token;
-  if (obj_type === 'sheet') return resolveEmbeddedBitable(obj_token, parsed.tableId, token);
+  if (obj_type === 'bitable') return withFirstTable(obj_token, parsed.tableId, token);
+  if (obj_type === 'sheet') return resolveEmbeddedBitable(obj_token, parsed, token);
   throw new Error(`该知识库节点不是多维表格（类型：${obj_type}）`);
 }
 
-/** 电子表格中内嵌的多维表格：v2 metainfo 中 BITABLE_BLOCK 页签的 blockToken 含有 app_token */
-async function resolveEmbeddedBitable(sheetToken: string, tableId: string, token: string): Promise<string> {
+/** 链接没有指定数据表时取多维表格里的第一张 */
+async function withFirstTable(appToken: string, tableId: string | undefined, token: string): Promise<Target> {
+  if (tableId) return { appToken, tableId };
+  const data = await call<{ items?: { table_id: string }[] }>(`/bitable/v1/apps/${appToken}/tables?page_size=1`, { token });
+  const first = data.items?.[0]?.table_id;
+  if (!first) throw new Error('该多维表格里没有数据表');
+  return { appToken, tableId: first };
+}
+
+/** 电子表格中内嵌的多维表格：v2 metainfo 中 BITABLE_BLOCK 页签的 blockToken 含有 app_token 与 table_id */
+async function resolveEmbeddedBitable(sheetToken: string, parsed: ParsedUrl, token: string): Promise<Target> {
   const data = await call<{ sheets: SheetMetaV2[] }>(`/sheets/v2/spreadsheets/${sheetToken}/metainfo`, { token });
-  const blocks = data.sheets
-    .map((s) => s.blockInfo)
-    .filter((b): b is { blockToken: string; blockType?: string } => b?.blockType === 'BITABLE_BLOCK' && !!b.blockToken);
-  if (!blocks.length) throw new Error('该电子表格中没有内嵌的多维表格');
+  const tabs = data.sheets.filter((s) => s.blockInfo?.blockType === 'BITABLE_BLOCK' && !!s.blockInfo.blockToken);
+  if (!tabs.length) throw new Error('该电子表格中没有内嵌的多维表格，只支持从多维表格读取任务');
+
+  const tableId = parsed.tableId;
+  if (!tableId) {
+    // 没有 table：按 sheet 参数找页签；sheet 也没有就用第一个内嵌多维表格的页签
+    const tab = parsed.sheetId ? tabs.find((s) => s.sheetId === parsed.sheetId) : tabs[0];
+    if (!tab) {
+      throw new Error(`链接里的页签（sheet=${parsed.sheetId}）不是多维表格。请打开内嵌多维表格的页签后复制链接，可用的页签：${tabs.map((s) => s.title).join('、')}`);
+    }
+    const blockToken = tab.blockInfo!.blockToken!;
+    const cut = blockToken.indexOf('_');
+    if (cut < 0 || cut === blockToken.length - 1) throw new Error(`无法从页签「${tab.title}」定位到数据表，请改用带 table 参数的链接`);
+    return { appToken: blockToken.slice(0, cut), tableId: blockToken.slice(cut + 1) };
+  }
 
   // 优先尝试 table_id 与链接一致的页签
-  blocks.sort((a, b) => Number(b.blockToken.endsWith(`_${tableId}`)) - Number(a.blockToken.endsWith(`_${tableId}`)));
-  const candidates = [...new Set(blocks.map((b) => appTokenFromBlockToken(b.blockToken)))];
+  const blockTokens = tabs.map((s) => s.blockInfo!.blockToken!);
+  blockTokens.sort((a, b) => Number(b.endsWith(`_${tableId}`)) - Number(a.endsWith(`_${tableId}`)));
+  const candidates = [...new Set(blockTokens.map(appTokenFromBlockToken))];
   for (const appToken of candidates) {
     try {
       await call(`/bitable/v1/apps/${appToken}/tables/${tableId}/fields?page_size=1`, { token });
-      return appToken;
+      return { appToken, tableId };
     } catch {
       // 换下一个候选
     }
@@ -234,8 +264,8 @@ export function formatDateFields(raw: Record<string, unknown>, dateFields: Set<s
 export async function fetchRecords(opts: { appId: string; appSecret: string; url: string }): Promise<FeishuRecord[]> {
   const parsed = parseFeishuUrl(opts.url);
   const token = await getTenantToken(opts.appId, opts.appSecret);
-  const appToken = await resolveAppToken(parsed, token);
-  const base = `/bitable/v1/apps/${appToken}/tables/${parsed.tableId}`;
+  const { appToken, tableId } = await resolveTarget(parsed, token);
+  const base = `/bitable/v1/apps/${appToken}/tables/${tableId}`;
 
   // 字段列表：主字段作为任务标题，同时保持字段原有顺序
   const fieldData = await call<{ items: FieldMeta[] }>(`${base}/fields?page_size=100`, { token });
@@ -261,10 +291,10 @@ export async function fetchRecords(opts: { appId: string; appSecret: string; url
       const rec = toRecord(item.record_id, formatDateFields(item.fields, dateFields), fieldNames, primary);
       rec.attachments = extractAttachments(item.fields, fieldData.items, {
         appToken,
-        tableId: parsed.tableId,
+        tableId,
         recordId: item.record_id,
       });
-      rec.sourceKey = `${appToken}/${parsed.tableId}/${item.record_id}`;
+      rec.sourceKey = `${appToken}/${tableId}/${item.record_id}`;
       records.push(rec);
     }
     pageToken = data.has_more ? data.page_token : undefined;
@@ -323,7 +353,7 @@ export function parseSourceKey(key: string | undefined): RecordRef | null {
 export async function locateRecord(opts: { appId: string; appSecret: string; url: string }, recordId: string): Promise<RecordRef> {
   const parsed = parseFeishuUrl(opts.url);
   const token = await getTenantToken(opts.appId, opts.appSecret);
-  return { appToken: await resolveAppToken(parsed, token), tableId: parsed.tableId, recordId };
+  return { ...(await resolveTarget(parsed, token)), recordId };
 }
 
 /** 文本(1) 和单选(3) 字段可以直接写入字符串 */
