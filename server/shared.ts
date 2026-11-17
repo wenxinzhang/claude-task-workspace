@@ -90,6 +90,33 @@ export function blockedExecutables(c: Pick<Criterion, 'method' | 'how'>, exec: P
   return mentionedExecutables(c.how).filter((x) => !allowed.has(x));
 }
 
+/**
+ * 飞书记录定位链接：在项目配置的原链接上补 table/record，保留知识库路径与
+ * 电子表格页签（sheet）上下文。内嵌多维表格的 app_token 只在 API 层有效，
+ * 直接开 /base/<appToken> 会落到另一个独立文档（默认首表），与配置的页签不是同一张表。
+ * 链接缺失、不是 wiki/base/sheets 形式、或链接里的 table 与任务不一致时，退回 /base/ 拼装。
+ * 已知限制：链接不带 table 时 sheet/view 原样保留（导入时正是靠它们解析出数据表与视图）；
+ * 若导入后配置被改到别的页签，客户端无 API 映射可判，可能产出 sheet 与 table 矛盾的链接。
+ */
+export function feishuRecordUrl(projectUrl: string | undefined, sourceKey: string): string | null {
+  const [app, table, record] = sourceKey.split('/');
+  if (!app || !table) return null;
+  const fallback = `https://feishu.cn/base/${app}?table=${table}${record ? `&record=${record}` : ''}`;
+  let url: URL;
+  try {
+    url = new URL((projectUrl ?? '').trim());
+  } catch {
+    return fallback;
+  }
+  if (!/\/(wiki|base|sheets)\/[A-Za-z0-9]+/.test(url.pathname)) return fallback;
+  const urlTable = url.searchParams.get('table');
+  if (urlTable && urlTable !== table) return fallback;
+  url.searchParams.set('table', table);
+  if (record) url.searchParams.set('record', record);
+  else url.searchParams.delete('record');
+  return url.toString();
+}
+
 /** 规格里还没有回答的问题：回答完才能确认规格 */
 export function openQuestions(spec: Pick<Spec, 'questions'>): string[] {
   return (spec.questions ?? []).filter((q) => !q.answer.trim()).map((q) => q.text);

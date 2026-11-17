@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, defaultEnv, fmtDayTime, statusLabel, type DeployStatus, type Project, type QueueStatus, type TaskBrief } from './api.ts';
-import { openQuestions } from '../../server/shared.ts';
+import { feishuRecordUrl, openQuestions } from '../../server/shared.ts';
 import { DeployPanel, confirmDeploy } from './Deploy.tsx';
 import { Icon } from './Icon.tsx';
 import { DiffView, SpecSummary } from './TaskDrawer.tsx';
@@ -27,11 +27,11 @@ const STATUS_PILL: Record<string, { cls: string }> = {
 
 export const shortId = (id: string) => `#${id.slice(0, 6)}`;
 
-/** 飞书原文定位链接 */
+/** 飞书原文定位链接：优先在项目配置的原链接上定位记录，保留知识库/页签上下文 */
 function feishuLink(project: Project, t: TaskBrief): string | null {
   if (t.sourceKey) {
-    const [app, table, record] = t.sourceKey.split('/');
-    if (app && table) return `https://feishu.cn/base/${app}?table=${table}${record ? `&record=${record}` : ''}`;
+    const link = feishuRecordUrl(project.feishu.url, t.sourceKey);
+    if (link) return link;
   }
   return t.source === 'feishu' ? project.feishu.url || null : null;
 }
