@@ -255,7 +255,7 @@ describe('Store 旧数据迁移', () => {
       expect(p).toMatchObject({ name: '默认项目', workdir: 'E:\\proj', feishu: { filterValues: '待修改' }, exec: { model: 'sonnet' } });
       expect(p.exec).not.toHaveProperty('workdir');
       expect(store.get('t1')?.projectId).toBe(p.id);
-      expect(store.getSettings()).toEqual({ feishu: { appId: 'cli_a', appSecret: 's' }, vault: { path: '', enabled: false }, observer: DEFAULT_OBSERVER_SETTINGS, skills: { libraryDir: '' }, models: [] });
+      expect(store.getSettings()).toEqual({ feishu: { appId: 'cli_a', appSecret: 's' }, observer: DEFAULT_OBSERVER_SETTINGS, skills: { libraryDir: '' }, models: [] });
       expect(store.nextTodo(p.id)?.id).toBe('t1');
 
       // 再次加载不会重复迁移

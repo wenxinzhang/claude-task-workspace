@@ -9,8 +9,7 @@ import { evaluateGate, FALLBACK_CRITERIA, gateError, manualChecksText, normalize
 import { commitMessage, commitTaskChanges, git, skippedDiff, snapshot, taskChanges, taskDiff, type GitSnapshot, type TaskChanges } from './git.ts';
 import { ensureMemoryDir } from './memory.ts';
 import { runPreflight } from './preflight.ts';
-import { analysisPrompt, historySection, implementPrompt, KNOWLEDGE_SCHEMA, knowledgePrompt, memorySection, relatedHistory, scratchSection, skillSection, verifyPrompt, verifySection } from './prompts.ts';
-import { vaultDomains, writeVaultNote, type KnowledgeNote } from './vault.ts';
+import { analysisPrompt, historySection, implementPrompt, memorySection, relatedHistory, scratchSection, skillSection, verifyPrompt, verifySection } from './prompts.ts';
 import { openQuestions, textLines } from './shared.ts';
 import { runShell } from './shell.ts';
 import { splitSkills, stageSkills } from './skills.ts';
@@ -485,11 +484,6 @@ export class Queue extends EventEmitter {
       this.store.update(id, { gate });
       this.logGate(gate, log);
 
-      // 门禁通过：提炼一条修复经验写入 Obsidian 知识库（配置开启时），失败不影响任务
-      if (gate.verdict === 'pass') {
-        await this.vaultExperience(id, project, log, signal).catch((e) => log(`知识库写入失败（不影响任务结果）：${message(e)}`));
-      }
-
       if (gate.verdict === 'fail') {
         this.store.setStatus(id, 'blocked', { error: gateError(gate), leftover: changed });
         return;
@@ -549,41 +543,6 @@ export class Queue extends EventEmitter {
     const list = relatedHistory(task, this.store.list());
     if (list.length) log(`附上 ${list.length} 个相关的已完成任务供参考`);
     return list;
-  }
-
-  /** 门禁通过后提炼经验写入 Obsidian 知识库；与项目记忆同一份「积累项目知识」开关控制 */
-  private async vaultExperience(id: string, project: Project, log: (l: string) => void, signal: AbortSignal) {
-    const vault = this.store.getSettings().vault;
-    if (!vault.enabled || !vault.path || !project.exec.useKnowledge) return;
-    const task = this.store.get(id)!;
-    log('===== 提炼修复经验 =====');
-    const res = await this.run({
-      cwd: project.workdir,
-      exec: project.exec,
-      stage: 'analysis',
-      access: 'read',
-      prompt: knowledgePrompt(task, project.name, vaultDomains(vault.path)),
-      schema: KNOWLEDGE_SCHEMA,
-      timeoutMs: 5 * 60_000,
-      onLog: log,
-      signal,
-    });
-    if (!res.ok) {
-      log(`经验提炼失败（不影响任务结果）：${res.text}`);
-      return;
-    }
-    const note = res.structured as KnowledgeNote | undefined;
-    if (!note || note.skip || !note.title?.trim()) {
-      log('本轮没有提炼出可复用经验，不写知识库');
-      return;
-    }
-    const written = writeVaultNote(vault.path, note, {
-      projectName: project.name,
-      source: path.basename(project.workdir) || project.name,
-      taskTitle: task.title,
-    });
-    this.store.update(id, { knowledge: { title: note.title, path: written.rel, group: written.group, at: Date.now() } });
-    log(`经验已${written.updated ? '更新' : '写入'}知识库：${written.rel}`);
   }
 
   /** 项目记忆目录 + 提示词段落；失败时只记日志，不影响任务 */

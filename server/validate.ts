@@ -5,7 +5,7 @@ import { CODEX_SANDBOXES, PERMISSION_MODES, PROVIDERS, type DeployEnv, type Exec
 import { normalizeEnv } from './store.ts';
 import type { ObserverSettingsPatch } from './observe-types.ts';
 
-export type SettingsPatch = { feishu?: Partial<Settings['feishu']>; vault?: Partial<Settings['vault']>; observer?: ObserverSettingsPatch; skills?: Partial<Settings['skills']>; models?: string[] };
+export type SettingsPatch = { feishu?: Partial<Settings['feishu']>; observer?: ObserverSettingsPatch; skills?: Partial<Settings['skills']>; models?: string[] };
 export type ProjectPatch = {
   name?: string;
   workdir?: string;
@@ -54,11 +54,6 @@ export function validateSettingsPatch(body: any): SettingsPatch {
     patch.feishu = {};
     if (f.appId !== undefined) patch.feishu.appId = str(f.appId, 200);
     if (f.appSecret !== undefined) patch.feishu.appSecret = str(f.appSecret, 200);
-  }
-  if (body?.vault) {
-    patch.vault = {};
-    if (body.vault.path !== undefined) patch.vault.path = str(body.vault.path, 500);
-    if (body.vault.enabled !== undefined) patch.vault.enabled = Boolean(body.vault.enabled);
   }
   if (body?.skills) {
     patch.skills = {};

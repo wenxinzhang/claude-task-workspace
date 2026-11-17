@@ -174,8 +174,6 @@ export interface Task {
   followUp?: boolean;
   /** 本任务改动了但没有提交的文件（任务异常，或没有开启自动提交）；再次执行时仍算作本任务的改动 */
   leftover?: string[];
-  /** 门禁通过后写入 Obsidian 知识库的经验条目 */
-  knowledge?: { title: string; path: string; group: string; at: number };
   createdAt: number;
   updatedAt: number;
 }
@@ -188,11 +186,6 @@ export interface Settings {
   feishu: {
     appId: string;
     appSecret: string;
-  };
-  /** Obsidian 知识库：门禁通过后把修复经验按库内约定写入 */
-  vault: {
-    path: string;
-    enabled: boolean;
   };
   /** 运行时观察者：问题台账 + 提案式自优化 */
   observer: ObserverSettings;
@@ -506,7 +499,6 @@ export const DEFAULT_EXEC: ExecConfig = {
 // 与 observe-types 的 DEFAULT_OBSERVER_SETTINGS 一致性由 observe-settings.test.ts 锚定
 export const DEFAULT_SETTINGS: Settings = {
   feishu: { appId: '', appSecret: '' },
-  vault: { path: '', enabled: false },
   observer: { enabled: false, autoOptimize: false, exec: { ...DEFAULT_EXEC, budgetUsd: 2 }, minNewObservations: 3, cooldownHours: 6 },
   skills: { libraryDir: '' },
   models: [],

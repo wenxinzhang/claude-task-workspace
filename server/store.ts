@@ -62,7 +62,6 @@ export class Store extends EventEmitter {
     const saved = readJson<any>(this.file('settings'), {});
     this.settings = {
       feishu: { appId: saved.feishu?.appId ?? '', appSecret: saved.feishu?.appSecret ?? '' },
-      vault: { path: saved.vault?.path ?? '', enabled: Boolean(saved.vault?.enabled) },
       observer: normalizeObserver(saved.observer),
       skills: { libraryDir: typeof saved.skills?.libraryDir === 'string' ? saved.skills.libraryDir : '' },
       models: Array.isArray(saved.models) ? saved.models.filter((m: unknown): m is string => typeof m === 'string') : [],
@@ -106,10 +105,9 @@ export class Store extends EventEmitter {
     return structuredClone(this.settings);
   }
 
-  updateSettings(patch: { feishu?: Partial<Settings['feishu']>; vault?: Partial<Settings['vault']>; observer?: ObserverSettingsPatch; skills?: Partial<Settings['skills']>; models?: string[] }) {
+  updateSettings(patch: { feishu?: Partial<Settings['feishu']>; observer?: ObserverSettingsPatch; skills?: Partial<Settings['skills']>; models?: string[] }) {
     this.settings = {
       feishu: { ...this.settings.feishu, ...patch.feishu },
-      vault: { ...this.settings.vault, ...patch.vault },
       observer: patch.observer
         ? { ...this.settings.observer, ...patch.observer, exec: { ...this.settings.observer.exec, ...patch.observer.exec } }
         : this.settings.observer,

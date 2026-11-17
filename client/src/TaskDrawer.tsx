@@ -300,12 +300,6 @@ export function TaskDrawer({ task, project, running, queue, onClose, onConfirmed
               飞书回写{task.writeback.state === 'done' ? '完成' : task.writeback.state === 'skipped' ? '已跳过' : '失败'}：{task.writeback.message}
             </div>
           )}
-          {task.knowledge && (
-            <div className="notice">
-              修复经验已写入知识库：{task.knowledge.title}
-              <span className="muted mono">（{task.knowledge.path}）</span>
-            </div>
-          )}
 
           {ran && !running && <DiffView taskId={task.id} stamp={task.updatedAt} />}
 

@@ -25,7 +25,7 @@ describe('观察者设置接入', () => {
     }
   });
 
-  it('updateSettings 合并 observer：exec 深合并，feishu/vault 不受影响，落盘往返', () => {
+  it('updateSettings 合并 observer：exec 深合并，feishu 不受影响，落盘往返', () => {
     const dir = tmpDir();
     try {
       const store = new Store(dir);

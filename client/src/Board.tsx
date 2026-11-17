@@ -225,7 +225,6 @@ export function Board({ project, tasks, queue, deploy, onConfigure, setOpenId }:
                             {t.writeback?.state === 'failed' && <span className="pill err">飞书回写失败</span>}
                             {t.writeback?.state === 'done' && <span className="pill ok">已回写飞书</span>}
                             {t.status === 'done' && t.manualChecks && <span className="pill">有部署后核对项</span>}
-                            {t.knowledge && <span className="pill ok">经验已入库</span>}
                             {/* 验收项未通过时上面已有标签，这里不再把同一句错误原文重复一遍 */}
                             {t.error && !firstFail && !(t.status === 'pending_confirm' && !t.spec) && (
                               <span className="pill err card-error" title={t.error}>

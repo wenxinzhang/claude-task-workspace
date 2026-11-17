@@ -208,52 +208,5 @@ ${renderCriteria(criteria)}${attachmentSection(files)}${testEnvSection(env)}${ch
 summary 用简体中文写整体说明。`;
 }
 
-/** 经验提炼阶段的输出结构：系统据此写入 Obsidian 知识库，代理不直接写库 */
-export const KNOWLEDGE_SCHEMA = {
-  type: 'object',
-  required: ['skip', 'title', 'group', 'why', 'how'],
-  properties: {
-    skip: { type: 'boolean', description: '没有可复用经验时为 true' },
-    title: { type: 'string', description: '一句话事实式标题' },
-    group: { type: 'string', enum: ['30-技术经验', '40-项目档案', '90-收件箱'] },
-    domain: { type: 'string', description: 'group 为 30 时必填，从已有领域里选' },
-    fact: { type: 'string', description: '事实本身' },
-    why: { type: 'string', description: '为什么' },
-    how: { type: 'string', description: '下次怎么用' },
-    related: { type: 'array', items: { type: 'string' }, description: '相关已有笔记标题，可空' },
-  },
-};
-
-/** 门禁通过后的经验提炼：只读代码，输出结构化条目，由系统按知识库约定落盘 */
-export function knowledgePrompt(task: Task, projectName: string, domains: string[]): string {
-  const gate = task.gate;
-  return `下面的修复任务已通过门禁。请你回顾这次修复，提炼**一条**下次做别的任务还用得上、且从代码里看不出来的经验，例如踩过的坑与绕法、某类问题的验证方法、环境或部署方面的事实。没有就 skip=true，不要硬写。
-
-你可以读代码核实事实（只读）。不要写任何文件——系统会根据你的输出写入知识库。
-
-## 任务
-${task.title}
-
-## 规格
-${task.analysis || task.description || '（无）'}
-
-## 执行总结（代理自述，仅供回顾）
-${task.summary || '（无）'}
-
-## 门禁结论
-${gate ? `${gate.verdict}；改动文件：${(gate.changedFiles ?? []).join('、') || '未知'}` : '（无）'}
-
-## 归类判据
-- 换个项目还会再遇到 → group="30-技术经验"，domain 从已有领域选：${domains.join('、') || '（无，选 90-收件箱）'}
-- 只对这个项目成立 → group="40-项目档案"
-- 拿不准 → group="90-收件箱"
-
-## 要求
-- 不写密码、Token、密钥
-- title 用事实式短句；fact 写事实，why 写为什么，how 写下次怎么用
-- related 可列相关笔记标题，没有就空数组
-- 项目名：${projectName}`;
-}
-
 // 观察者提示词与 schema：阶段一定义在 observe-prompts.ts，此处再导出保持单一导入路径
 export { observePrompt, OBSERVE_SCHEMA, optimizePrompt, PROPOSAL_SCHEMA, proposalHistorySection } from './observe-prompts.ts';
