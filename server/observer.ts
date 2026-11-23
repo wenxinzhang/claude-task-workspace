@@ -9,6 +9,8 @@ import { ObservationStore } from './observe.ts';
 import { canRemoveProposal, canRetryApply, DEFAULT_OBSERVER_SETTINGS, type ApplyResult, type ObserverSettings, type ObserverStatus, type ProbeRecord } from './observe-types.ts';
 import { Optimizer } from './optimize.ts';
 import { ProposalStore } from './proposal-store.ts';
+import { UsageEventStore, type UsageEvent } from './usage-event.ts';
+import { computeUsageMetrics, usageFindings, type UsageMetrics } from './usage-metrics.ts';
 import type { Queue } from './queue.ts';
 import { specHash } from './spec.ts';
 import type { Store } from './store.ts';
@@ -46,6 +48,12 @@ export interface Observer {
   observations: ObservationStore;
   proposals: ProposalStore;
   optimizer: Optimizer;
+  /** 使用事件存储：查询与清空直接用它；新增事件走 addUsage（受采集开关约束） */
+  usage: UsageEventStore;
+  addUsage: (raw: unknown) => UsageEvent | null;
+  usageMetrics: (windowDays?: number) => UsageMetrics;
+  /** 使用摩擦采集：把达到阈值的摩擦写进台账（按 key 去重），返回新增条数 */
+  collectUsage: () => number;
   gitBusy: Set<string>;
   isIdle: () => boolean;
   onRunEnd: (id: string) => void;
@@ -79,6 +87,7 @@ export function createObserver(deps: ObserverDeps): Observer {
   const getSettings = deps.getSettings ?? (() => store.getSettings() as { observer?: ObserverSettings });
   const observations = new ObservationStore(path.join(root, 'data'));
   const proposals = new ProposalStore(path.join(root, 'data'));
+  const usage = new UsageEventStore(path.join(root, 'data'));
   const gitBusy = new Set<string>();
   let applying: string | null = null;
   let applyMode: 'apply' | 'rollback' | null = null;
@@ -172,6 +181,7 @@ export function createObserver(deps: ObserverDeps): Observer {
       for (const d of classifyRunEnd(t)) observations.add(d);
       // 每轮结束只做零成本的流程采集；LLM 审查统一由流程审查会话在空闲时做，不再每个异常轮次各起一次
       collectFlow();
+      collectUsage();
       void optimizer.maybeAuto().catch(() => {});
     }
     const pending = pendingProbes.get(id);
@@ -322,6 +332,10 @@ export function createObserver(deps: ObserverDeps): Observer {
     observations,
     proposals,
     optimizer,
+    usage,
+    addUsage: (raw: unknown) => ((getSettings().observer ?? DEFAULT_OBSERVER_SETTINGS).usageCollect === false ? null : usage.add(raw)),
+    usageMetrics,
+    collectUsage,
     gitBusy,
     isIdle,
     onRunEnd,
@@ -400,6 +414,7 @@ export function createObserver(deps: ObserverDeps): Observer {
     flush: () => {
       observations.flush();
       proposals.flush();
+      usage.flush();
     },
     dispose: () => {
       clearInterval(pollTimer);

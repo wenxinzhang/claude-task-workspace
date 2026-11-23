@@ -256,7 +256,7 @@ export function TaskDrawer({ task, project, running, queue, onClose, onConfirmed
               <textarea ref={noteRef} rows={3} value={note} onChange={(e) => setNote(e.target.value)} disabled={!canFollowUp} aria-label="追加指令" placeholder="追加指令：告诉代理接下来还要改什么，例如「分项统计也要按树的范围过滤」" />
               <div className="row">
                 <small className="muted grow">{followHint}</small>
-                <button type="button" className="btn btn-primary" disabled={!canFollowUp || !note.trim() || busy} onClick={() => run(sendNote)}>
+                <button type="button" className="btn btn-primary" data-usage="btn-followup-send" disabled={!canFollowUp || !note.trim() || busy} onClick={() => run(sendNote)}>
                   发送并继续执行
                 </button>
               </div>
@@ -346,6 +346,7 @@ export function TaskDrawer({ task, project, running, queue, onClose, onConfirmed
               </button>
               <button
                 className="btn btn-primary"
+                data-usage="btn-spec-confirm"
                 disabled={task.analyzing || openCount > 0 || busy}
                 title={openCount > 0 ? `规格里还有 ${openCount} 个问题没有回答，回答后才能确认` : undefined}
                 onClick={() =>
@@ -366,6 +367,7 @@ export function TaskDrawer({ task, project, running, queue, onClose, onConfirmed
               </button>
               <button
                 className="btn btn-primary"
+                data-usage="btn-run-one"
                 disabled={!!queue.currentId || queue.preflight?.state === 'checking' || busy}
                 title={queue.currentId ? '本项目有任务正在执行，等它结束后再试' : '只执行这一个任务，不启动队列；执行前会先做开工前自检'}
                 onClick={() =>
@@ -382,10 +384,10 @@ export function TaskDrawer({ task, project, running, queue, onClose, onConfirmed
           )}
           {task.status === 'review' && (
             <>
-              <button className="btn btn-outline" onClick={reject} title="写明哪里不对，代理在这次改动的基础上继续修改，然后重新验证">
+              <button className="btn btn-outline" data-usage="btn-review-reject" onClick={reject} title="写明哪里不对，代理在这次改动的基础上继续修改，然后重新验证">
                 打回重做
               </button>
-              <button className="btn btn-primary" disabled={busy} onClick={() => run(action('accept'))}>
+              <button className="btn btn-primary" data-usage="btn-review-accept" disabled={busy} onClick={() => run(action('accept'))}>
                 验收通过
               </button>
             </>
@@ -406,7 +408,7 @@ export function TaskDrawer({ task, project, running, queue, onClose, onConfirmed
             </button>
           )}
           {['blocked', 'done'].includes(task.status) && (
-            <button className="btn btn-outline" disabled={busy} onClick={() => run(action('retry'))} title="按规格从头再执行一遍">
+            <button className="btn btn-outline" data-usage="btn-task-retry" data-usage-kind="retry" disabled={busy} onClick={() => run(action('retry'))} title="按规格从头再执行一遍">
               重新放入{statusLabel(project, 'todo')}
             </button>
           )}

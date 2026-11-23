@@ -370,11 +370,11 @@ export function Inbox({ project, tasks, queue, deploy, onOpenTask, onConfigure }
           {queue.currentId ? '有任务正在执行，详情见任务看板。' : queue.running ? '按待修改顺序逐个执行。' : '当前没有任务执行，修复队列处于暂停状态。'}
         </span>
         {queue.running ? (
-          <button className="btn btn-outline-primary" onClick={() => act(() => api(`/api/projects/${project.id}/queue/pause`, 'POST'))}>
+          <button className="btn btn-outline-primary" data-usage="btn-queue-pause" onClick={() => act(() => api(`/api/projects/${project.id}/queue/pause`, 'POST'))}>
             <Icon name="pause" /> 暂停队列
           </button>
         ) : (
-          <button className="btn btn-outline-primary" onClick={() => act(() => api(`/api/projects/${project.id}/queue/start`, 'POST'))}>
+          <button className="btn btn-outline-primary" data-usage="btn-queue-start" onClick={() => act(() => api(`/api/projects/${project.id}/queue/start`, 'POST'))}>
             <Icon name="play" /> 启动队列
           </button>
         )}

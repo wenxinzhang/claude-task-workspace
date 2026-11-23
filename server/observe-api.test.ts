@@ -52,7 +52,7 @@ afterEach(async () => {
   for (const fn of cleanups.splice(0)) fn();
 });
 
-function obsSetup(opts: { deployRunning?: boolean; enabled?: boolean; implementDelay?: number } = {}) {
+function obsSetup(opts: { deployRunning?: boolean; enabled?: boolean; implementDelay?: number; usageCollect?: boolean } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-observer-'));
   cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
   const workdir = path.join(root, 'work');
@@ -76,7 +76,7 @@ function obsSetup(opts: { deployRunning?: boolean; enabled?: boolean; implementD
     store,
     queue,
     deployer,
-    getSettings: () => ({ observer: { ...DEFAULT_OBSERVER_SETTINGS, enabled: opts.enabled !== false } }),
+    getSettings: () => ({ observer: { ...DEFAULT_OBSERVER_SETTINGS, enabled: opts.enabled !== false, usageCollect: opts.usageCollect !== false } }),
     run: fakeRun,
     spawnApply: (mode, proposalId) => spawned.push({ mode, proposalId }),
   });
@@ -545,5 +545,44 @@ describe('重启恢复', () => {
     } finally {
       ob2.dispose();
     }
+  });
+});
+
+describe('usage 路由', () => {
+  it('上报合法事件返回事件；非法形状 400；采集关闭时拒收', async () => {
+    const ctx = apiSetup();
+    const ok = await post(`${ctx.base}/api/usage/events`, { kind: 'click', target: 'btn-start' });
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toMatchObject({ kind: 'click', target: 'btn-start' });
+    expect((await post(`${ctx.base}/api/usage/events`, { kind: 'evil', target: 'x' })).status).toBe(400);
+    const off = apiSetup(undefined, { usageCollect: false });
+    expect((await post(`${off.base}/api/usage/events`, { kind: 'click', target: 'x' })).status).toBe(400);
+  });
+
+  it('metrics 按窗口统计；collect 把摩擦入台账且去重；clear 清空事件', async () => {
+    const ctx = apiSetup();
+    // 造 3 组连点：每组 3 下间隔 1 秒，组间隔 10 秒（只伪造 Date，定时器保持真实；失败也恢复时钟）
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const start = Date.now();
+      for (let b = 0; b < 3; b++) {
+        for (let i = 0; i < 3; i++) {
+          vi.setSystemTime(start - b * 10_000 - i * 1000);
+          ctx.observer.usage.add({ kind: 'click', target: 'btn-x' });
+        }
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+    const m = await (await fetch(`${ctx.base}/api/usage/metrics?days=7`)).json();
+    expect(m.eventCount).toBe(9);
+    expect(m.repeatedClicks).toEqual([{ target: 'btn-x', repeats: 3 }]);
+    // 非法窗口夹取到 1~90 天，不静默返回空窗口
+    expect((await (await fetch(`${ctx.base}/api/usage/metrics?days=-1`)).json()).eventCount).toBe(9);
+    expect((await (await fetch(`${ctx.base}/api/usage/metrics?days=999`)).json()).eventCount).toBe(9);
+    expect(await (await post(`${ctx.base}/api/usage/collect`)).json()).toEqual({ added: 1 });
+    expect(await (await post(`${ctx.base}/api/usage/collect`)).json()).toEqual({ added: 0 });
+    expect(await (await post(`${ctx.base}/api/usage/clear`)).json()).toEqual({ cleared: 9 });
+    expect((await (await fetch(`${ctx.base}/api/usage/metrics`)).json()).eventCount).toBe(0);
   });
 });

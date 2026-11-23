@@ -11,6 +11,7 @@ import { NewProjectDialog } from './Settings.tsx';
 import { Sidebar, VIEW_LABEL, type View } from './Sidebar.tsx';
 import { TaskDrawer } from './TaskDrawer.tsx';
 import { TopBar } from './TopBar.tsx';
+import { initUsageCollect, installUsageClicks, track } from './usage.ts';
 
 const LAST_PROJECT_KEY = 'lastProjectId';
 const readLast = () => {
@@ -92,7 +93,17 @@ export function App() {
     } catch {
       // 无痕模式等场景不可用，忽略
     }
+    // StrictMode 开发期 effect 双跑：同一视图只报一次
+    if (lastTrackedView.current !== view) {
+      lastTrackedView.current = view;
+      track('view', view);
+    }
   }, [view]);
+  // 使用观测：初始化采集开关 + 全局点击委托（只收 data-usage 标记的控件）
+  useEffect(() => {
+    initUsageCollect();
+    return installUsageClicks();
+  }, []);
   const [projectId, setProjectId] = useState<string | null>(readLast);
   const [creating, setCreating] = useState(false);
   // 项目管理页当前打开的是什么：项目列表、全局设置，或某个项目的配置
@@ -103,6 +114,17 @@ export function App() {
   };
   // 当前打开的任务抽屉：看板、收件箱、执行记录都能打开
   const [openId, setOpenId] = useState<string | null>(null);
+  // 抽屉停留时长：打开时记时刻，关闭时把毫秒数随 close_drawer 上报
+  const drawerOpenedAt = useRef<number | null>(null);
+  useEffect(() => {
+    if (openId && drawerOpenedAt.current === null) {
+      drawerOpenedAt.current = Date.now();
+      track('open_drawer', 'task-drawer');
+    } else if (!openId && drawerOpenedAt.current !== null) {
+      track('close_drawer', 'task-drawer', Date.now() - drawerOpenedAt.current);
+      drawerOpenedAt.current = null;
+    }
+  }, [openId]);
   // 操作指引：第一次打开时自动出现一次（等项目列表到了、页面上的入口都渲染出来之后），之后只在点按钮时出现
   const [guideOpen, setGuideOpen] = useState(false);
   const guideAuto = useRef(false);

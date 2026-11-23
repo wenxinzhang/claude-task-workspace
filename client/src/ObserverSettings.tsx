@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, PROVIDER_LABEL, type Settings } from './api.ts';
 import { ModelSelect } from './ModelSelect.tsx';
+import { setUsageCollect } from './usage.ts';
 import { SaveStatus, useAutoSave } from './useAutoSave.tsx';
 
 type Msg = { text: string; error?: boolean } | null;
@@ -27,7 +28,7 @@ export function ObserverSettings() {
       <h2 className="bar-title">观察者</h2>
       <p className="muted">
         观察自动运行暴露的工具问题（报错、门禁未过、集成失败等），异常轮次起只读会话复盘归因；问题积累到内置条件且队列空闲时自动诊断生成优化提案。
-        提案经你确认后才应用：应用前自动备份，类型检查或测试不过自动回滚。诊断与复盘使用下方代理，独立于各项目的执行设置。
+        提案的应用方式见下方开关：应用前自动备份，类型检查或测试不过自动回滚。诊断与复盘使用下方代理，独立于各项目的执行设置。
       </p>
       {!o ? (
         <p className={msg?.error ? 'error' : 'muted'}>{msg?.text ?? '加载中…'}</p>
@@ -39,7 +40,22 @@ export function ObserverSettings() {
           </label>
           <label className="check">
             <input type="checkbox" checked={o.autoOptimize} onChange={(ev) => set({ autoOptimize: ev.target.checked })} />
-            自动诊断（队列空闲且问题达到内置条件时自动生成提案；应用仍需你确认）
+            自动诊断（队列空闲且问题达到内置条件时自动生成提案；应用是否需确认由下方「自动应用」决定）
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={o.usageCollect}
+              onChange={(ev) => {
+                set({ usageCollect: ev.target.checked });
+                setUsageCollect(ev.target.checked);
+              }}
+            />
+            采集使用事件（只记控件标识与计数/时长，不记任务内容；供观察者「使用洞察」分析摩擦）
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={o.autoApply} disabled={!o.autoOptimize} onChange={(ev) => set({ autoApply: ev.target.checked })} />
+            自动应用（需先开启自动诊断；仅限其产出的低风险提示词提案，应用前自动备份，类型检查或测试不过自动回滚，可一键撤销）
           </label>
           <div className="field-row">
             <span className="field-label">代理</span>
@@ -66,6 +82,18 @@ export function ObserverSettings() {
           )}
           <div className="actions">
             <SaveStatus state={state} />
+            {msg && <span className={msg.error ? 'error' : 'muted'} role="status">{msg.text}</span>}
+            <button
+              className="btn btn-outline"
+              onClick={() => {
+                api<{ cleared: number }>('/api/usage/clear', 'POST').then(
+                  (r) => setMsg({ text: `已清空 ${r.cleared} 条使用事件` }),
+                  (e) => setMsg({ text: (e as Error).message, error: true }),
+                );
+              }}
+            >
+              清空使用数据
+            </button>
           </div>
         </>
       )}

@@ -141,6 +141,15 @@ export function registerObserverRoutes(app: Express, observer: Observer, issueOp
     return updated;
   }));
   app.post('/api/observations/clear', wrap(() => ({ cleared: observer.clearObservations() })));
+  // 使用事件：前端上报（形状非法或采集已关闭即拒），以及摩擦指标查询与手动采集
+  app.post('/api/usage/events', wrap((req) => {
+    const ev = observer.addUsage(req.body);
+    if (!ev) throw new Error('事件未被接受：形状非法或使用采集已关闭');
+    return ev;
+  }));
+  app.get('/api/usage/metrics', wrap((req) => observer.usageMetrics(Math.min(90, Math.max(1, Number(req.query.days) || 7)))));
+  app.post('/api/usage/collect', wrap(() => ({ added: observer.collectUsage() })));
+  app.post('/api/usage/clear', wrap(() => ({ cleared: observer.usage.clear() })));
   app.get('/api/proposals', wrap(() => observer.proposals.list()));
   app.post('/api/proposals/clear', wrap(() => ({ cleared: observer.clearProposals() })));
   app.delete('/api/proposals/:id', wrap((req) => {

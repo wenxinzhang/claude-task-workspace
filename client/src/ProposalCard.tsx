@@ -92,8 +92,8 @@ export function ProposalCard({ p, observations, status, busy, open, onToggle, ac
         )}
         {p.status === 'pending' && (
           <span className="obs-actions" onClick={(e) => e.stopPropagation()}>
-            <button className="btn btn-sm btn-primary" disabled={applyDisabled} onClick={apply}>应用</button>
-            <button className="btn btn-sm" disabled={busy} onClick={() => void act(() => api(`/api/proposals/${p.id}/reject`, 'POST'))}>拒绝</button>
+            <button className="btn btn-sm btn-primary" data-usage="btn-proposal-apply" disabled={applyDisabled} onClick={apply}>应用</button>
+            <button className="btn btn-sm" data-usage="btn-proposal-reject" disabled={busy} onClick={() => void act(() => api(`/api/proposals/${p.id}/reject`, 'POST'))}>拒绝</button>
           </span>
         )}
       </div>
@@ -104,7 +104,7 @@ export function ProposalCard({ p, observations, status, busy, open, onToggle, ac
       {canRetry(p) && (
         <div className="proposal-note">
           <span>上次应用没有成功，文件已还原：{p.result?.output.split('\n')[0] || '原因未记录'}</span>
-          <button className="btn btn-sm" disabled={applyDisabled} onClick={apply}>重试应用</button>
+          <button className="btn btn-sm" data-usage="btn-proposal-apply" data-usage-kind="retry" disabled={applyDisabled} onClick={apply}>重试应用</button>
           <button className="btn btn-sm" disabled={busy} onClick={() => void act(() => api(`/api/proposals/${p.id}/reject`, 'POST'))}>放弃</button>
         </div>
       )}
