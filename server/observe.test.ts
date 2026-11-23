@@ -381,3 +381,78 @@ describe('ProposalStore', () => {
     }
   });
 });
+
+describe('ObservationStore 问题编号', () => {
+  it('新记录递增编号；旧文件里没编号的按入库时间补齐并写回，重启后不变', () => {
+    const dir = tmpDir();
+    try {
+      const legacy = [
+        { ...draft({ title: '后入库' }), id: 'b', at: 200, status: 'new' },
+        { ...draft({ title: '先入库' }), id: 'a', at: 100, status: 'resolved' },
+      ];
+      fs.writeFileSync(path.join(dir, 'observations.json'), JSON.stringify(legacy));
+      const s = new ObservationStore(dir);
+      expect(s.get('a')!.number).toBe(1);
+      expect(s.get('b')!.number).toBe(2);
+      expect(s.add(draft()).number).toBe(3);
+      s.flush();
+      const again = new ObservationStore(dir);
+      expect(again.list().map((r) => [r.id, r.number])).toEqual([['b', 2], ['a', 1], [expect.any(String), 3]]);
+      expect(again.add(draft()).number).toBe(4);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('改状态、编辑内容都刷新 updatedAt', () => {
+    const dir = tmpDir();
+    try {
+      const s = new ObservationStore(dir);
+      const o = s.add(draft(), 1000);
+      expect(s.setStatus(o.id, 'ignored', 2000)!.updatedAt).toBe(2000);
+      expect(s.editContent(o.id, { owner: '张三' }, 3000)).toMatchObject({ updatedAt: 3000, owner: '张三' });
+      expect(s.editContent(o.id, { owner: '' }, 4000).owner).toBeUndefined();
+      s.flush();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ObservationStore 编号不复用', () => {
+  it('最新一条被清理后再新增：编号继续往上，不复用；重启后水位仍在', () => {
+    const dir = tmpDir();
+    try {
+      const s = new ObservationStore(dir);
+      s.add(draft({ title: 'a' }));
+      const b = s.add(draft({ title: 'b' }));
+      expect(b.number).toBe(2);
+      s.setStatus(b.id, 'ignored');
+      s.clearHandled();
+      expect(s.list().map((r) => r.number)).toEqual([1]);
+      expect(s.add(draft({ title: 'c' })).number).toBe(3);
+      s.flush();
+      const again = new ObservationStore(dir);
+      expect(again.add(draft({ title: 'd' })).number).toBe(4);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ObservationStore 上限截断', () => {
+  it('超过上限时删最旧的、不在提交中的记录，刚新增的那条一定保留', () => {
+    const dir = tmpDir();
+    try {
+      const s = new ObservationStore(dir);
+      for (let i = 0; i < 500; i++) s.add(draft({ title: `t${i}` }), i);
+      const added = s.add(draft({ title: '最新' }), 1000);
+      expect(s.list()).toHaveLength(500);
+      expect(s.get(added.id)?.title).toBe('最新');
+      expect(s.list().some((r) => r.title === 't0')).toBe(false);
+      s.flush();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

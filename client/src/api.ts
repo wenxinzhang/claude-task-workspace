@@ -144,6 +144,18 @@ export async function uploadImage(taskId: string, file: File): Promise<TaskBrief
   return data as TaskBrief;
 }
 
+/** 上传截图给观察者诊断：立即返回，诊断后台跑，结果经 SSE 推送到台账 */
+export async function uploadScreenshot(file: File, page: string, note: string): Promise<{ started: boolean; token: string }> {
+  const res = await fetch(`/api/observations/screenshot-diagnose?page=${encodeURIComponent(page)}&note=${encodeURIComponent(note)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': file.type, 'X-File-Name': encodeURIComponent(file.name || 'image.png') },
+    body: file,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((data as { error?: string }).error ?? res.statusText);
+  return data as { started: boolean; token: string };
+}
+
 /** 前端预检，和服务端限制一致 */
 export function checkImage(file: File): string | null {
   if (!IMAGE_TYPES.includes(file.type)) return `「${file.name}」不是支持的图片格式`;

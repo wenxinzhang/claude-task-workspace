@@ -4,7 +4,7 @@ import { Board } from './Board.tsx';
 import { Guide, guideSeen } from './Guide.tsx';
 import { Icon } from './Icon.tsx';
 import { Inbox } from './Inbox.tsx';
-import { Observer } from './Observer.tsx';
+import { Observer, OBSERVER_HASH, parseObserverHash } from './Observer.tsx';
 import { ProjectsPage, type ManageTarget } from './ProjectsPage.tsx';
 import { Records } from './Records.tsx';
 import { NewProjectDialog } from './Settings.tsx';
@@ -44,7 +44,48 @@ export function App() {
   const { projects, tasks, queues, deploys, history, observations, proposals, observer, flow, connected } = useLive();
   // 角标与提案列表同源同一数组：计数结构性等于列表长度
   const observerPending = proposals.filter((p) => p.status === 'pending').length;
-  const [view, setView] = useState<View>(readView);
+  // 地址栏带观察者路由（刷新详情页、直接打开链接）时优先进观察者
+  const [view, setView] = useState<View>(() => {
+    if (parseObserverHash(location.hash)) return 'observer';
+    // 整页重新加载回到某个历史条目时，以条目里记的视图为准，不被上次停留的观察者盖掉
+    const saved = (window.history.state as { view?: unknown } | null)?.view;
+    if (typeof saved === 'string' && saved !== 'observer' && Object.prototype.hasOwnProperty.call(VIEW_LABEL, saved)) return saved as View;
+    return readView();
+  });
+  const lastTrackedView = useRef<View | null>(null);
+  // 观察者用 hash 路由：进观察者时补上默认地址，离开时清掉；浏览器前进后退在两边切换。
+  // 注意这里的 history 被 useLive 的执行记录占了名字，浏览器历史用 window.history
+  const firstView = useRef(true);
+  useEffect(() => {
+    const inHash = !!parseObserverHash(location.hash);
+    const first = firstView.current;
+    firstView.current = false;
+    if (view === 'observer' && !inHash) {
+      // 首次打开就停在观察者（上次停在这里）：替换当前地址，不多出一条历史；从别的视图进来才新增一条
+      const url = `${OBSERVER_HASH}/issues`;
+      if (first) window.history.replaceState({ view }, '', url);
+      else window.history.pushState({ view }, '', url);
+    } else if (view !== 'observer' && inHash) {
+      window.history.pushState({ view }, '', location.pathname + location.search);
+    } else if (!inHash) {
+      // 记下当前视图：从观察者后退回来时回到原来的视图，而不是一律回收件箱
+      window.history.replaceState({ ...(window.history.state ?? {}), view }, '');
+    }
+  }, [view]);
+  useEffect(() => {
+    const on = () => {
+      if (parseObserverHash(location.hash)) return setView('observer');
+      const saved = (window.history.state as { view?: unknown } | null)?.view;
+      const back = typeof saved === 'string' && saved !== 'observer' && Object.prototype.hasOwnProperty.call(VIEW_LABEL, saved) ? (saved as View) : 'inbox';
+      setView((v) => (v === 'observer' ? back : v));
+    };
+    window.addEventListener('hashchange', on);
+    window.addEventListener('popstate', on);
+    return () => {
+      window.removeEventListener('hashchange', on);
+      window.removeEventListener('popstate', on);
+    };
+  }, []);
   useEffect(() => {
     try {
       localStorage.setItem(LAST_VIEW_KEY, view);
@@ -151,6 +192,7 @@ export function App() {
               status={observer}
               flow={flow}
               projects={projects ?? []}
+              currentProjectId={project?.id ?? null}
               onOpenTask={(pid, tid) => {
                 // 目标项目已归档/删除或任务不存在时不跳转，避免落错项目上下文
                 if (!(projects ?? []).some((p) => p.id === pid && !p.archived) || !tasks.some((t) => t.id === tid)) return;

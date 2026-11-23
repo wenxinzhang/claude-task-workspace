@@ -22,6 +22,10 @@ export const OBSERVATION_KINDS = [
   'flow_backlog',
   'flow_gate',
   'flow_finding',
+  'usage_friction',
+  'screenshot_finding',
+  // 使用者在问题目录里手动新建的问题
+  'manual',
 ] as const;
 export type ObservationKind = (typeof OBSERVATION_KINDS)[number];
 
@@ -42,6 +46,8 @@ export interface ObservationContext {
   branch?: string;
   upstream?: string | null;
   envName?: string;
+  /** 截图诊断的附件标识：详情页据此显示/删除截图 */
+  screenshotToken?: string;
 }
 
 export interface Observation {
@@ -53,6 +59,10 @@ export interface Observation {
   severity: ObservationSeverity;
   title: string;
   detail: string;
+  /** 用户保存的问题描述和建议，原始观察记录保留在 detail */
+  review?: ObservationReview;
+  suggestion?: string;
+  issue?: ObservationIssue;
   context: ObservationContext;
   source: ObservationSource;
   status: ObservationStatus;
@@ -64,6 +74,43 @@ export interface Observation {
   key?: string;
   /** 标为已解决的时间：带 key 的问题在此后一段时间内不重新入库 */
   resolvedAt?: number;
+  /** 问题目录里的编号 #N：入库时递增分配；旧记录在加载时按入库时间补齐，之后不再变 */
+  number?: number;
+  /** 分章节正文（问题目录详情页）。旧记录没有，显示时由 review / detail 兼容映射 */
+  sections?: ObservationSections;
+  /** 负责人：没填显示「待分配」 */
+  owner?: string;
+  /** 最后更新时间：改状态、改正文时刷新；旧记录没有时取 resolvedAt / at */
+  updatedAt?: number;
+}
+
+/** 问题详情的五个章节，顺序即展示顺序。problem 与 goal 新建时必填，其余可空 */
+export const OBSERVATION_SECTION_KEYS = ['problem', 'impact', 'goal', 'plan', 'verification'] as const;
+export type ObservationSectionKey = (typeof OBSERVATION_SECTION_KEYS)[number];
+export type ObservationSections = Partial<Record<ObservationSectionKey, string>>;
+export const OBSERVATION_SECTION_LABEL: Record<ObservationSectionKey, string> = {
+  problem: '问题是什么',
+  impact: '影响范围',
+  goal: '要解决什么',
+  plan: '处理方案',
+  verification: '验收标准',
+};
+
+export interface ObservationReview {
+  finding: string;
+  suggestion: string;
+}
+
+export interface ObservationIssue {
+  repository: string;
+  number: number;
+  url: string;
+}
+
+export interface ObservationIssueDraft {
+  repository: string;
+  title: string;
+  body: string;
 }
 
 export type ObservationAttribution = 'tool' | 'project' | 'environment';
@@ -224,6 +271,7 @@ export interface OptimizeRun {
 
 /** 流程审查的一条发现：第三方视角看出的不合理环节 */
 export interface FlowReviewFinding {
+  suggestion?: string;
   title: string;
   detail: string;
   attribution?: ObservationAttribution;

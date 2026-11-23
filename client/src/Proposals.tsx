@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, fmtDayTime, fmtDuration, useNow, type Observation, type ObserverStatus, type Proposal } from './api.ts';
 import { canRemoveProposal, componentRiskRank } from '../../server/observe-types.ts';
 import { canRetry, ProposalCard } from './ProposalCard.tsx';
@@ -7,6 +7,8 @@ interface Props {
   proposals: Proposal[];
   observations: Observation[];
   status: ObserverStatus | null;
+  /** 从问题详情跳过来时要展开的提案 */
+  focusId?: string;
 }
 
 /** 为什么现在不能审查：一句话告诉使用者要等什么 */
@@ -35,9 +37,21 @@ function LastRun({ status }: { status: ObserverStatus }) {
 }
 
 /** 优化提案：等你批准的在前，其余收进「已处理」；审查进行中显示已用时 */
-export function Proposals({ proposals, observations, status }: Props) {
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [showDone, setShowDone] = useState(false);
+export function Proposals({ proposals, observations, status, focusId }: Props) {
+  // 指定了提案：直接展开它；它可能已经收进「已处理」，一并展开折叠区
+  const [expanded, setExpanded] = useState<string | null>(focusId ?? null);
+  const [showDone, setShowDone] = useState(!!focusId);
+  // 刷新提案页时列表可能还没推送到：等对应的提案出现再滚过去，滚到一次就不再动
+  const scrolled = useRef(false);
+  const focusLoaded = !!focusId && proposals.some((p) => p.id === focusId);
+  useEffect(() => {
+    if (!focusId || !focusLoaded || scrolled.current) return;
+    const el = document.getElementById(`proposal-${focusId}`);
+    if (el) {
+      el.scrollIntoView({ block: 'center' });
+      scrolled.current = true;
+    }
+  }, [focusId, focusLoaded]);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
@@ -72,7 +86,9 @@ export function Proposals({ proposals, observations, status }: Props) {
 
   const blocked = blockedReason(status);
   const card = (p: Proposal) => (
-    <ProposalCard key={p.id} p={p} observations={observations} status={status} busy={busy} open={expanded === p.id} onToggle={() => setExpanded(expanded === p.id ? null : p.id)} act={act} />
+    <div key={p.id} id={`proposal-${p.id}`} className={focusId === p.id ? 'proposal-focus' : undefined}>
+      <ProposalCard p={p} observations={observations} status={status} busy={busy} open={expanded === p.id} onToggle={() => setExpanded(expanded === p.id ? null : p.id)} act={act} />
+    </div>
   );
 
   return (

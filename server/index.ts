@@ -25,6 +25,9 @@ import { validateProjectPatch, validateSettingsPatch } from './validate.ts';
 import { STATUSES, type Project, type Task, type TaskStatus } from './types.ts';
 import { createObserver } from './observer.ts';
 import { registerObserverRoutes } from './observe-api.ts';
+import { githubRepository } from './observation-issue.ts';
+import { effectiveAttribution } from './observe-types.ts';
+import { registerScreenshotRoutes, ScreenshotDiagnoser } from './screenshot-diagnose.ts';
 
 const PORT = Number(process.env.PORT ?? 5174);
 const HOST = '127.0.0.1'; // 仅本机访问，无鉴权
@@ -707,7 +710,23 @@ app.get(
 );
 
 // ---------- 观察者（问题台账 / 优化提案） ----------
-registerObserverRoutes(app, observer);
+registerObserverRoutes(app, observer, {
+  projectExists: (id) => {
+    const p = store.getProject(id);
+    return !!p && !p.archived;
+  },
+  resolveRepository: (observation) => githubRepository(
+    effectiveAttribution(observation) === 'project' ? store.getProject(observation.projectId)?.workdir : root,
+  ),
+});
+// 截图诊断：只产出诊断与建议入台账，不改代码；截图本地暂存、可查看可删除
+const screenshotDiagnoser = new ScreenshotDiagnoser({
+  observations: observer.observations,
+  getSettings: () => store.getSettings(),
+  toolRoot: root,
+  attachmentDir: attachments.dir,
+});
+registerScreenshotRoutes(app, observer, { attachments, diagnoser: screenshotDiagnoser });
 // 流程体检：任务变化后节流推送各项目的流程指标，并做一次零成本的流程采集
 let flowTimer: NodeJS.Timeout | null = null;
 store.on('tasks', () => {

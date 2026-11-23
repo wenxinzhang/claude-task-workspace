@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +8,7 @@ import type { AgentRequest, AgentResult } from './agent.ts';
 import { registerObserverRoutes } from './observe-api.ts';
 import { applyProposal, backupFiles, resultPath, runningPath } from './apply-proposal.ts';
 import { compareProbe, createObserver } from './observer.ts';
-import { DEFAULT_OBSERVER_SETTINGS, type Proposal } from './observe-types.ts';
+import { DEFAULT_OBSERVER_SETTINGS, isActionable, type Proposal } from './observe-types.ts';
 import { Queue } from './queue.ts';
 import { Store } from './store.ts';
 import type { GateResult, ItemResult, RunEvidence } from './types.ts';
@@ -293,11 +293,11 @@ describe('collect 系列', () => {
 
 // ---------- REST 路由集成：express + listen(0) + 真实 fetch ----------
 
-function apiSetup() {
-  const ctx = obsSetup();
+function apiSetup(issueOptions?: Parameters<typeof registerObserverRoutes>[2], obsOpts?: Parameters<typeof obsSetup>[0]) {
+  const ctx = obsSetup(obsOpts);
   const app = express();
   app.use(express.json());
-  registerObserverRoutes(app, ctx.observer);
+  registerObserverRoutes(app, ctx.observer, issueOptions);
   const server = app.listen(0);
   const port = (server.address() as AddressInfo).port;
   cleanups.push(() => {
@@ -311,6 +311,76 @@ const post = (url: string, body?: unknown) =>
   fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
 
 describe('观察者路由', () => {
+  it('保存台账编辑，预填可编辑的 Issue 草稿，确认后只发布一次并保留问题状态', async () => {
+    const createIssue = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return { number: 42, url: 'https://github.com/owner/tool/issues/42' };
+    });
+    const ctx = apiSetup({ resolveRepository: async () => 'owner/tool', createIssue });
+    const original = '失败后继续启动下一项\n建议：暂停队列';
+    const o = ctx.observer.observations.add({
+      projectId: '', kind: 'llm_finding', severity: 'warn', title: '队列没有暂停', detail: original, context: {}, source: 'llm',
+    });
+    const url = `${ctx.base}/api/observations/${o.id}`;
+    const draft = await (await fetch(`${url}/issue-draft`)).json();
+    expect(draft).toMatchObject({ repository: 'owner/tool', title: o.title });
+    expect(draft.body).toContain('暂停队列');
+    expect(createIssue).not.toHaveBeenCalled();
+    const review = { finding: '失败后启动下一项', suggestion: '发现残留改动时暂停队列' };
+    const edited = await post(`${url}/review`, review);
+    expect(await edited.json()).toMatchObject({ detail: original, review });
+    const current = await (await fetch(`${url}/issue-draft`)).json();
+    expect(current.body).toContain(review.suggestion);
+    const submission = { repository: 'owner/tool', title: '用户确认的标题', body: '用户确认的正文' };
+    expect((await post(`${url}/issue`, submission)).status).toBe(400);
+    expect((await post(`${url}/issue`, { ...submission, repository: 'other/repo', confirmed: true })).status).toBe(400);
+    expect(createIssue).not.toHaveBeenCalled();
+    const confirmed = { ...submission, confirmed: true };
+    expect((await fetch(`${url}/issue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'https://foreign.example' },
+      body: JSON.stringify(confirmed),
+    })).status).toBe(400);
+    const responses = await Promise.all([post(`${url}/issue`, confirmed), post(`${url}/issue`, confirmed)]);
+    expect(responses.map((r) => r.status)).toEqual([200, 200]);
+    expect(await responses[0].json()).toMatchObject({ issue: { number: 42 }, status: 'new' });
+    expect(createIssue.mock.calls).toEqual([['owner/tool', submission.title, submission.body]]);
+    const persisted = JSON.parse(fs.readFileSync(path.join(ctx.root, 'data', 'observations.json'), 'utf8'))[0];
+    expect(persisted).toMatchObject({ detail: original, review, status: 'new', issue: { number: 42, repository: 'owner/tool' } });
+  });
+
+  it('问题目录：新建必填标题/问题是什么/要解决什么，带递增编号；编辑章节刷新更新时间，原 detail 不动', async () => {
+    const ctx = apiSetup();
+    const old = ctx.observer.observations.add({ projectId: 'p1', kind: 'exec_error', severity: 'error', title: '旧问题', detail: '原始报错', context: {}, source: 'code' });
+    expect(old.number).toBe(1);
+    const base = `${ctx.base}/api/observations`;
+    // 缺必填项：400，不入库
+    expect((await post(base, { title: '标题', sections: { problem: '现象' } })).status).toBe(400);
+    expect((await post(base, { title: '', sections: { problem: '现象', goal: '目标' } })).status).toBe(400);
+    expect(ctx.observer.observations.list()).toHaveLength(1);
+    const res = await post(base, { title: '新增测试文件被判范围外', sections: { problem: '门禁转人工', goal: '计划内测试文件通过', bogus: 'x' }, owner: '张三', source: '门禁记录', projectId: 'p1' });
+    expect(res.status).toBe(200);
+    const created = await res.json();
+    expect(created).toMatchObject({ number: 2, kind: 'manual', status: 'new', owner: '张三', projectId: 'p1', sections: { problem: '门禁转人工', goal: '计划内测试文件通过' } });
+    expect(created.sections.bogus).toBeUndefined();
+    // 编辑旧记录：写入章节，原 detail 保留
+    const edited = await (await post(`${base}/${old.id}/content`, { sections: { problem: '执行时报错', verification: '重跑通过' }, owner: '李四' })).json();
+    expect(edited).toMatchObject({ detail: '原始报错', owner: '李四', sections: { problem: '执行时报错', verification: '重跑通过' } });
+    expect(edited.updatedAt).toBeGreaterThanOrEqual(old.at);
+    expect((await post(`${base}/missing/content`, { owner: 'x' })).status).toBe(400);
+    // 编辑不能把章节冲掉或清空
+    expect((await post(`${base}/${old.id}/content`, { sections: '' })).status).toBe(400);
+    expect((await post(`${base}/${old.id}/content`, { sections: {} })).status).toBe(400);
+    expect((await post(`${base}/${created.id}/content`, { sections: { problem: '只有问题' } })).status).toBe(400);
+    expect(ctx.observer.observations.get(old.id)!.sections).toEqual({ problem: '执行时报错', verification: '重跑通过' });
+    // 手动问题默认按归属分流：带项目的记为目标项目问题，不计入自动审查；全局的记为工具问题
+    expect(created.attribution).toBe('project');
+    expect(isActionable(created)).toBe(false);
+    const toolIssue = await (await post(base, { title: '工具问题', sections: { problem: 'p', goal: 'g' } })).json();
+    expect(toolIssue.attribution).toBe('tool');
+    expect(isActionable(toolIssue)).toBe(true);
+  });
+
   it('GET observations 空/有；status 端点合法更新、非法值 400', async () => {
     const ctx = apiSetup();
     expect(await (await fetch(`${ctx.base}/api/observations`)).json()).toEqual([]);
