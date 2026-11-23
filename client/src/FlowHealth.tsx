@@ -59,6 +59,9 @@ export function FlowHealth({ flow, projects }: Props) {
               {m.analyzeStuck.reasons.slice(0, 2).map((r) => (
                 <span key={r.reason} className="flow-fact warn" title={r.reason}>{r.n} 个任务生成规格失败：{r.reason}</span>
               ))}
+              {m.holdReasons.slice(0, 3).map((r) => (
+                <span key={r.reason} className="flow-fact warn" title={r.reason}>{r.n} 个任务转人工：{r.reason}</span>
+              ))}
             </div>
           </div>
         );

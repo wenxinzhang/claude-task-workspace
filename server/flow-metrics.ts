@@ -22,6 +22,8 @@ export interface FlowMetrics {
   stages: StageMetric[];
   /** 门禁结论分布：只数有门禁结论的任务 */
   outcomes: { gated: number; pass: number; unverified: number; fail: number };
+  /** 转人工的原因分布：按每个任务最近一次门禁里的 hold 理由归并，按任务计数，数量多的在前 */
+  holdReasons: { reason: string; n: number }[];
   /** 未完成状态的积压：数量与最久停留时长（按 updatedAt 算） */
   backlog: { status: TaskStatus; n: number; oldestMs: number }[];
   /** 停在待确认且生成规格失败的任务：按失败原因归并，数量多的在前 */
@@ -79,6 +81,19 @@ export function computeFlowMetrics(tasks: Task[], now: number): FlowMetrics {
     outcomes.gated++;
     outcomes[t.gate.verdict]++;
   }
+  // 转人工的原因：hold 理由尾巴带着文件名/验收项编号，归并时去掉；条数归一成 N；同一任务同一原因只计一次
+  const holdCounts = new Map<string, number>();
+  for (const t of tasks) {
+    const seen = new Set<string>();
+    for (const r of t.gate?.reasons ?? []) {
+      if (r.level !== 'hold') continue;
+      const reason = r.text.split('：')[0].replace(/^\d+/, 'N');
+      if (seen.has(reason)) continue;
+      seen.add(reason);
+      holdCounts.set(reason, (holdCounts.get(reason) ?? 0) + 1);
+    }
+  }
+  const holdReasons = [...holdCounts.entries()].map(([reason, n]) => ({ reason, n })).sort((a, b) => b.n - a.n);
   const backlog: FlowMetrics['backlog'] = [];
   for (const status of BACKLOG_STATUSES) {
     const of = tasks.filter((t) => t.status === status);
@@ -94,7 +109,7 @@ export function computeFlowMetrics(tasks: Task[], now: number): FlowMetrics {
   }
   const reasons = [...reasonCounts.entries()].map(([reason, n]) => ({ reason, n })).sort((a, b) => b.n - a.n);
   const analyzeStuck = { n: reasons.reduce((x, r) => x + r.n, 0), reasons };
-  return { at: now, taskCount: tasks.length, stages, outcomes, backlog, analyzeStuck };
+  return { at: now, taskCount: tasks.length, stages, outcomes, holdReasons, backlog, analyzeStuck };
 }
 
 /** 从一个项目的流程指标判出流程问题：只按可数的事实判，不做主观评价 */
@@ -141,6 +156,7 @@ export function flowSection(projects: { name: string; metrics: FlowMetrics }[]):
       }
       const o = m.outcomes;
       if (o.gated) lines.push(`- 门禁结论（每个任务最近一次）${o.gated} 个：通过 ${o.pass}，需要人工验收 ${o.unverified}，未通过 ${o.fail}`);
+      if (m.holdReasons.length) lines.push(`- 转人工的原因（最近一次门禁的 hold，按任务计）：${m.holdReasons.slice(0, 5).map((r) => `${r.n} 个：${r.reason}`).join('；')}`);
       for (const b of m.backlog) lines.push(`- 积压：${STATUS_NAME[b.status] ?? b.status} ${b.n} 个，最久已停留 ${hours(b.oldestMs)}`);
       for (const r of m.analyzeStuck.reasons.slice(0, 3)) lines.push(`- 生成规格失败 ${r.n} 个：${r.reason}`);
       return lines.join('\n');
