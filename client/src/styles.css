@@ -1548,6 +1548,46 @@ textarea {
 .step-ico.run {
   background: var(--blue);
 }
+/* 还没轮到 / 已跳过的部署步骤：空心圈 + 灰字 */
+.step-ico.idle {
+  background: transparent;
+  border: 2px solid var(--muted);
+  box-sizing: border-box;
+}
+.step-list li.step-idle {
+  opacity: 0.55;
+}
+.step-spinner {
+  width: 10px;
+  height: 10px;
+}
+.deploy-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  margin: 4px 0;
+}
+.deploy-progress-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+.deploy-progress-bar span {
+  display: block;
+  height: 100%;
+  background: var(--blue);
+  transition: width 0.3s ease;
+}
+.deploy-progress-bar span.err {
+  background: var(--err);
+}
+/* 手动停止：灰色，和真正的失败区分开 */
+.deploy-progress-bar span.stopped {
+  background: var(--muted);
+  filter: brightness(0.8);
+}
 .commit-list {
   display: flex;
   flex-direction: column;

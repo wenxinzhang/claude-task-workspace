@@ -730,6 +730,20 @@ describe('流转方式：自动确认、自动开工、失败后的改动归属'
     expect(ctx.store.get(id)!.status).toBe('todo');
   }, 40_000);
 
+  it('外部占用（部署智能体在改代码目录）期间不取任务，占用解除后再 tick 就接上', async () => {
+    const ctx = await setup({ implement: implOk, verify: bothPass });
+    let deploying = true;
+    ctx.queue.setBlocker((pid) => pid === ctx.project.id && deploying);
+    const id = ctx.addTodo();
+    ctx.queue.start(ctx.project.id);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(ctx.store.get(id)!.status).toBe('todo');
+    expect(ctx.calls.filter((s) => s !== 'preflight')).toEqual([]);
+    deploying = false;
+    ctx.queue.tick();
+    expect((await ctx.settled(id)).status).toBe('done');
+  }, 40_000);
+
   it('实现中途失败：已经改动的文件记在这个任务上，不留给后面的任务当成「执行前已有的改动」', async () => {
     const ctx = await setup({
       implement: (req) => {

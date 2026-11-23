@@ -22,5 +22,6 @@ export function lastDeployed(records: HistoryRecord[], envName: string, current:
     .sort((a, b) => b.startedAt - a.startedAt)[0];
   if (!last || last.status !== 'success') return { upToDate: false };
   const same = !!hash(current) && hash(current) === hash(last.commit);
-  return { upToDate: same && dirtyTracked === 0, commit: last.commit, at: last.finishedAt };
+  // 部署智能体改过代码的那次，服务器上跑的是 commit 加未提交改动，不能当成这个 commit 已部署
+  return { upToDate: same && dirtyTracked === 0 && !last.repaired, commit: last.commit, at: last.finishedAt };
 }

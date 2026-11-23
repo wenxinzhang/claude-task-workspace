@@ -343,7 +343,8 @@ export interface TestEnv {
 /** 部署步骤：构建产物 / 发布服务 / 健康检查，配置了才跑，时长按实际计时 */
 export interface DeployStep {
   name: string;
-  status: 'ok' | 'fail' | 'running';
+  /** pending：已排好还没轮到；skipped：前面失败或手动停止，这步没跑 */
+  status: 'pending' | 'running' | 'ok' | 'fail' | 'skipped';
   durationMs?: number;
 }
 
@@ -358,6 +359,12 @@ export interface DeployStatus {
   commit?: string;
   steps?: DeployStep[];
   envName?: string;
+  /** 部署智能体是否改过代码：为 true 时实际发布的是 commit 加上未提交的改动 */
+  repaired?: boolean;
+  /** 当前这一遍（构建 → 发布 → 健康检查）在 steps 里的起始下标；进度只按这一遍算，修复重试时不会往回跳 */
+  passStart?: number;
+  /** 这次部署是手动停止的：前端据此显示「已停止」而不是「失败」 */
+  aborted?: boolean;
 }
 
 /** 执行记录：AI 修复 / Git 同步 / 代码推送 / 部署，持久化在 data/history.json */
@@ -382,6 +389,8 @@ export interface HistoryRecord {
   commits?: { hash: string; subject: string }[];
   envName?: string;
   commit?: string;
+  /** 部署：部署智能体改过代码，实际发布的是 commit 加未提交的改动 */
+  repaired?: boolean;
   steps?: DeployStep[];
   logs: string[];
   error?: string;

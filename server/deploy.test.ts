@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
+import path from 'node:path';
 import { Deployer } from './deploy.ts';
 
 const finished = (d: Deployer, id: string) =>
@@ -83,8 +85,67 @@ describe('Deployer', () => {
     await done;
     const st = d.status('p');
     expect(st.ok).toBe(false);
-    expect(st.steps?.map((s) => s.name)).toEqual(['构建产物']);
-    expect(st.steps?.[0].status).toBe('fail');
+    // 一开始就排好了全部步骤：构建失败后，发布服务标成跳过
+    expect(st.steps?.map((s) => s.name)).toEqual(['构建产物', '发布服务']);
+    expect(st.steps?.map((s) => s.status)).toEqual(['fail', 'skipped']);
     expect(d.logs('p').some((l) => l.includes('should-not-run'))).toBe(false);
   });
+
+  it('修复后重试：第二遍步骤带后缀，passStart 指向第二遍，上一遍失败与跳过的步骤保留', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-repair-'));
+    try {
+      const d = new Deployer();
+      const done = finished(d, 'p');
+      d.start('p', {
+        command: 'echo published',
+        // 第一遍没有标记文件就失败；修复时写入标记文件，第二遍通过
+        buildCommand: `node -e "process.exit(require('fs').existsSync('fixed.txt') ? 0 : 1)"`,
+        cwd: dir,
+        timeoutMs: 30_000,
+        maxRepairs: 2,
+        repair: async () => {
+          fs.writeFileSync(path.join(dir, 'fixed.txt'), 'ok');
+          return true;
+        },
+      });
+      await done;
+      const st = d.status('p');
+      expect(st.ok).toBe(true);
+      expect(st.repaired).toBe(true);
+      expect(st.aborted).toBeUndefined();
+      expect(st.steps?.map((s) => s.name)).toEqual(['构建产物', '发布服务', '智能体修复（第 1 轮）', '构建产物（第 2 次）', '发布服务（第 2 次）']);
+      expect(st.steps?.map((s) => s.status)).toEqual(['fail', 'skipped', 'ok', 'ok', 'ok']);
+      expect(st.passStart).toBe(3);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('手动停止：正在跑的那步记失败，没轮到的标跳过，状态带 aborted', async () => {
+    const d = new Deployer();
+    const done = finished(d, 'p');
+    const publishing = new Promise<void>((resolve) => {
+      const check = () => {
+        if (d.status('p').steps?.some((s) => s.name === '发布服务' && s.status === 'running')) {
+          d.off('status', check);
+          resolve();
+        }
+      };
+      d.on('status', check);
+    });
+    d.start('p', {
+      command: `node -e "setTimeout(() => {}, 20000)"`,
+      healthCheck: 'http://127.0.0.1:1/health',
+      cwd: os.tmpdir(),
+      timeoutMs: 30_000,
+    });
+    await publishing;
+    d.stop('p');
+    await done;
+    const st = d.status('p');
+    expect(st.ok).toBe(false);
+    expect(st.aborted).toBe(true);
+    expect(st.steps?.map((s) => s.status)).toEqual(['fail', 'skipped']);
+    expect(st.steps?.some((s) => s.status === 'pending' || s.status === 'running')).toBe(false);
+  }, 15_000);
 });

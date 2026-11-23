@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api, fmtDateTime, fmtSec, onDeployLog, statusLabel, type HistoryRecord, type Project, type QueueStatus, type Task, type TaskBrief } from './api.ts';
 import { Icon } from './Icon.tsx';
 import { shortId } from './Inbox.tsx';
+import { StepIcon } from './Deploy.tsx';
 
 interface Props {
   project: Project;
@@ -346,12 +347,10 @@ function OpDetail({ record }: { record: HistoryRecord }) {
       {record.kind === 'deploy' && !!record.steps?.length && (
         <ul className="step-list">
           {record.steps.map((s, i) => (
-            <li key={i}>
-              <span className={`step-ico ${s.status === 'fail' ? 'err' : s.status === 'running' ? 'run' : 'ok'}`}>
-                <Icon name={s.status === 'fail' ? 'x' : 'check'} size={12} />
-              </span>
+            <li key={i} className={s.status === 'pending' || s.status === 'skipped' ? 'step-idle' : undefined}>
+              <StepIcon status={s.status} />
               <span className="grow">{s.name}</span>
-              <span className="mono muted">{s.durationMs !== undefined ? fmtSec(s.durationMs) : ''}</span>
+              <span className="mono muted">{s.status === 'skipped' ? '已跳过' : s.status === 'pending' ? '等待中' : s.durationMs !== undefined ? fmtSec(s.durationMs) : ''}</span>
             </li>
           ))}
         </ul>

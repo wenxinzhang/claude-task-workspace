@@ -208,6 +208,13 @@ export class Queue extends EventEmitter {
     this.runners.delete(projectId);
   }
 
+  /** 外部占用判断（例如部署智能体正在改代码目录）：返回 true 时这个项目暂不开始新任务，等占用结束后再 tick */
+  private blocker?: (projectId: string) => boolean;
+
+  setBlocker(fn: (projectId: string) => boolean) {
+    this.blocker = fn;
+  }
+
   tick() {
     setImmediate(() => {
       // 自动开工：待修改里有任务、队列没在跑、使用者也没手动暂停过，就把队列拉起来
@@ -227,6 +234,8 @@ export class Queue extends EventEmitter {
       }
       for (const [projectId, r] of this.runners) {
         if (r.currentId) continue;
+        // 部署智能体等外部占用期间不取任务：两个写权限智能体不能同时改同一个代码目录
+        if (this.blocker?.(projectId)) continue;
         const next = this.pick(projectId, r);
         if (!next || !this.ready(projectId, r)) continue;
         if (r.once === next.id) r.once = undefined;

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, fmtSec, onDeployLog, type DeployEnv, type DeployStatus, type Project } from './api.ts';
+import { api, fmtSec, onDeployLog, type DeployEnv, type DeployStatus, type DeployStep, type Project } from './api.ts';
 import { Icon } from './Icon.tsx';
 
 const time = (ms?: number) => (ms ? new Date(ms).toLocaleString('zh-CN', { hour12: false }) : '');
@@ -51,7 +51,14 @@ export function DeployButton({ project, env, status, busy, onConfigure }: { proj
     }
   };
 
-  const label = status?.running ? '部署中…' : '一键部署';
+  const prog = deployProgress(status);
+  const label = status?.running
+    ? prog.repairing
+      ? '修复中…'
+      : prog.total
+        ? `部署中 ${Math.max(prog.current, 1)}/${prog.total}`
+        : '部署中…'
+    : '一键部署';
   const title = status?.running
     ? '点击查看部署日志'
     : status?.finishedAt
@@ -73,6 +80,89 @@ export function DeployButton({ project, env, status, busy, onConfigure }: { proj
       </button>
       {open && <DeployPanel project={project} status={status} error={err} onClose={() => setOpen(false)} onRetry={start} />}
     </>
+  );
+}
+
+const REPAIR_PREFIX = '智能体修复';
+
+/**
+ * 部署进度：只按当前这一遍（构建 → 发布 → 健康检查）算一共几步、现在第几步。
+ * 修复重试时上一遍和修复步骤不计入，分母不会越滚越大；新的一遍开始时进度从 0 重新算，
+ * 步骤名带「（第 N 次）」说明这是重试。修复步骤单独通过 repairing 给出。
+ * 老状态没有 passStart 时按 0 处理，退化成整体计算。
+ */
+export function deployProgress(status?: DeployStatus): {
+  total: number;
+  current: number;
+  finished: number;
+  currentName?: string;
+  repairing?: string;
+} {
+  const all = status?.steps ?? [];
+  const tail = all.slice(Math.min(status?.passStart ?? 0, all.length));
+  const steps = tail.filter((s) => !s.name.startsWith(REPAIR_PREFIX));
+  const repairing = tail.find((s) => s.name.startsWith(REPAIR_PREFIX) && s.status === 'running')?.name;
+  const total = steps.length;
+  const finished = steps.filter((s) => s.status === 'ok' || s.status === 'fail' || s.status === 'skipped').length;
+  const idx = steps.findIndex((s) => s.status === 'running');
+  const current = idx >= 0 ? idx + 1 : finished;
+  return { total, current, finished, currentName: idx >= 0 ? steps[idx].name : undefined, repairing };
+}
+
+/** 步骤状态图标：执行记录页的部署步骤也用它，pending / skipped 不能显示成对勾 */
+export function StepIcon({ status }: { status: DeployStep['status'] }) {
+  if (status === 'running')
+    return (
+      <span className="step-ico run">
+        <span className="spinner step-spinner" aria-hidden />
+      </span>
+    );
+  if (status === 'pending' || status === 'skipped') return <span className="step-ico idle" aria-hidden />;
+  return (
+    <span className={`step-ico ${status === 'fail' ? 'err' : 'ok'}`}>
+      <Icon name={status === 'fail' ? 'x' : 'check'} size={12} />
+    </span>
+  );
+}
+
+function DeployProgress({ status }: { status: DeployStatus }) {
+  const { total, current, finished, currentName, repairing } = deployProgress(status);
+  const raw = total ? Math.round((finished / total) * 100) : 0;
+  // 还在跑（比如这一遍失败、正等智能体修复）时不显示 100%，避免看起来像已经结束
+  const pct = status.running ? Math.min(raw, 99) : raw;
+  const text = status.running
+    ? repairing
+      ? `${repairing}进行中，修好后重新部署`
+      : currentName
+        ? `第 ${current}/${total} 步：${currentName}`
+        : finished >= total
+          ? '处理中…'
+          : `已完成 ${finished}/${total} 步`
+    : status.aborted
+      ? `已手动停止（${finished}/${total} 步已结束）`
+      : status.ok
+        ? `共 ${total} 步，全部完成`
+        : `部署失败（${finished}/${total} 步已结束）`;
+  const barClass = status.running ? undefined : status.aborted ? 'stopped' : status.ok === false ? 'err' : undefined;
+  return (
+    <div className="deploy-progress">
+      <div className="row">
+        <span>{text}</span>
+        <span className="grow" />
+        <span className="mono muted">{pct}%</span>
+      </div>
+      <div
+        className="deploy-progress-bar"
+        role="progressbar"
+        aria-label="部署进度"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={pct}
+        aria-valuetext={text}
+      >
+        <span style={{ width: `${pct}%` }} className={barClass} />
+      </div>
+    </div>
   );
 }
 
@@ -118,15 +208,16 @@ export function DeployPanel({ project, status, error, onClose, onRetry }: { proj
           {status?.startedAt && <div>开始：{time(status.startedAt)}</div>}
           {status?.finishedAt && <div>结束：{time(status.finishedAt)}</div>}
         </div>
+        {!!status?.steps?.length && <DeployProgress status={status} />}
         {!!status?.steps?.length && (
           <ul className="step-list">
             {status.steps.map((s, i) => (
-              <li key={i}>
-                <span className={`step-ico ${s.status === 'fail' ? 'err' : s.status === 'running' ? 'run' : 'ok'}`}>
-                  <Icon name={s.status === 'fail' ? 'x' : 'check'} size={12} />
+              <li key={i} className={s.status === 'pending' || s.status === 'skipped' ? 'step-idle' : undefined}>
+                <StepIcon status={s.status} />
+                <span className="grow">
+                  {i + 1}. {s.name}
                 </span>
-                <span className="grow">{s.name}</span>
-                <span className="mono muted">{s.durationMs !== undefined ? fmtSec(s.durationMs) : ''}</span>
+                <span className="mono muted">{s.status === 'skipped' ? '已跳过' : s.status === 'pending' ? '等待中' : s.durationMs !== undefined ? fmtSec(s.durationMs) : ''}</span>
               </li>
             ))}
           </ul>

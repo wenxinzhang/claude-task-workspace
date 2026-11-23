@@ -8,7 +8,8 @@ import { randomUUID } from 'node:crypto';
 import { credsLabel, Store } from './store.ts';
 import { Queue } from './queue.ts';
 import { AttachmentCache, MAX_UPLOAD_BYTES } from './attachments.ts';
-import { Deployer } from './deploy.ts';
+import { Deployer, DEPLOY_REPAIR_SCHEMA, deployRepairPrompt } from './deploy.ts';
+import { runAgent } from './agent.ts';
 import { History, aiRecordFromTask } from './history.ts';
 import { listLibrarySkills, listSkills, skillLibraryProblem } from './skills.ts';
 import { authArgs, branches, checkout, commitsBetween, git, repoInfo, setRemote, syncRemote, type RepoInfo, type SyncResult } from './git.ts';
@@ -34,6 +35,9 @@ store.recoverInterrupted();
 const attachments = new AttachmentCache(path.join(root, 'data', 'attachments'), (projectId) => store.feishuCreds(projectId));
 const queue = new Queue(store, attachments);
 const deployer = new Deployer();
+// 部署进行中（含部署智能体修代码）时队列不取新任务：两个写权限智能体不能同时改同一个代码目录；
+// 部署结束时下面的 status 监听会再 tick 一次，把等着的任务接上
+queue.setBlocker((projectId) => deployer.status(projectId).running);
 const history = new History(path.join(root, 'data'));
 history.backfillAI(store.list());
 
@@ -125,11 +129,21 @@ deployer.on('status', () => {
     if (st.running) {
       history.update(rid, { steps: st.steps });
     } else {
-      history.update(rid, { status: st.ok ? 'success' : 'failed', finishedAt: st.finishedAt, steps: st.steps, logs: deployer.logs(pid).slice(-200) });
+      // 记录状态没有「已停止」一档：手动停止仍记 failed，但在 error 里写明，执行记录页能看出不是真失败
+      history.update(rid, {
+        status: st.ok ? 'success' : 'failed',
+        finishedAt: st.finishedAt,
+        steps: st.steps,
+        repaired: st.repaired,
+        logs: deployer.logs(pid).slice(-200),
+        ...(st.aborted ? { error: '已手动停止' } : {}),
+      });
       deployRecordIds.delete(pid);
       observer.collectDeployResult(pid, st, deployer.logs(pid));
     }
   }
+  // 部署结束后解除队列占用：让部署期间等着的任务开始
+  queue.tick();
 });
 deployer.on('log', (e) => {
   broadcast('deploy-log', e);
@@ -761,6 +775,8 @@ app.post(
     // 必须在写执行记录之前拦，且和写记录之间不能再有 await：否则第二次请求虽然被部署器拒绝，
     // 却已经多写了一条永远「运行中」的记录，并把记录指针指向它，正在进行的那次部署就再也收不到结束状态
     if (deployer.status(project.id).running) throw new Error('正在部署中，请等它结束或先停止部署');
+    // 反方向同理：任务正在改代码目录时不让部署智能体进来改
+    if (queue.isBusy(project.id)) throw new Error('有任务正在执行，请等它结束后再部署');
     const rec = history.add({
       id: randomUUID(),
       projectId: project.id,
@@ -790,6 +806,32 @@ app.post(
         DEPLOY_PASSWORD: env.password,
         DEPLOY_URL: env.url,
         DEPLOY_COMMIT: commit ?? '',
+      },
+      // 部署智能体：用项目「执行设置」里配置的大模型代理（Claude Code / Codex / 本地命令），不依赖任何外部服务
+      maxRepairs: 3,
+      repair: async (ctx) => {
+        const prompt = deployRepairPrompt(ctx, {
+          envName: env.name,
+          buildCommand: env.buildCommand || undefined,
+          command,
+          healthCheck: env.healthCheck || undefined,
+        });
+        const result = await runAgent({
+          stage: 'implement',
+          access: 'write',
+          prompt,
+          cwd: project.workdir,
+          exec: project.exec,
+          schema: DEPLOY_REPAIR_SCHEMA,
+          timeoutMs: project.exec.timeoutMinutes * 60_000,
+          onLog: (line) => ctx.log(`[智能体] ${line}`),
+          signal: ctx.signal,
+        });
+        const out = (result.structured ?? {}) as { fixed?: boolean; cause?: string; summary?: string };
+        if (!result.ok) ctx.log(`部署智能体运行失败：${result.text}`);
+        if (out.cause) ctx.log(`部署智能体判断原因：${out.cause}`);
+        if (out.summary) ctx.log(`部署智能体结论：${out.summary}`);
+        return result.ok && out.fixed === true;
       },
     });
     return deployer.status(project.id);

@@ -22,6 +22,27 @@ export class History extends EventEmitter {
     } catch {
       this.records = [];
     }
+    this.recoverInterrupted();
+  }
+
+  /**
+   * 上次服务异常退出（崩溃、强杀、重启）时还在跑的记录：进程已经没了，不会再有人更新它们。
+   * 启动时统一收尾成失败，步骤里没跑完的 running 标成 fail、pending 标成 skipped，避免永远显示「运行中」。
+   */
+  private recoverInterrupted() {
+    let changed = false;
+    for (const r of this.records) {
+      if (r.status !== 'running') continue;
+      r.status = 'failed';
+      r.finishedAt ??= Date.now();
+      r.error ??= '服务中断，执行未完成';
+      for (const st of r.steps ?? []) {
+        if (st.status === 'running') st.status = 'fail';
+        else if (st.status === 'pending') st.status = 'skipped';
+      }
+      changed = true;
+    }
+    if (changed) this.save();
   }
 
   list(projectId?: string): HistoryRecord[] {
