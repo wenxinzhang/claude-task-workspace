@@ -26,7 +26,15 @@ export const SPEC_SCHEMA = {
         },
       },
     },
-    questions: strings,
+    questions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['text', 'suggestion'],
+        properties: { text: { type: 'string' }, suggestion: { type: 'string' } },
+      },
+    },
     risks: strings,
   },
 } as const;
@@ -73,7 +81,11 @@ export function normalizeSpec(raw: unknown, opts: { maxCriteria?: number } = {})
     questions: (Array.isArray(r.questions) ? r.questions : [])
       .map((q) => {
         const o = (q && typeof q === 'object' ? q : {}) as Record<string, unknown>;
-        return typeof q === 'string' ? { text: text(q, 1000), answer: '' } : { text: text(o.text, 1000), answer: text(o.answer, 2000) };
+        if (typeof q === 'string') return { text: text(q, 1000), answer: '' };
+        const suggestion = text(o.suggestion, 2000);
+        // 代理生成时没有 answer：用它的建议作回答初稿，使用者可以改；页面保存时带 answer（可能被清空），原样保留
+        const answer = 'answer' in o ? text(o.answer, 2000) : suggestion;
+        return suggestion ? { text: text(o.text, 1000), answer, suggestion } : { text: text(o.text, 1000), answer };
       })
       .filter((q) => q.text)
       .slice(0, 10),

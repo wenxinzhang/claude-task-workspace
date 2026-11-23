@@ -512,6 +512,12 @@ export function SpecSummary({ spec, exec, canAnswer, onChange }: { spec: Spec; e
             <label key={i}>
               {q.text}
               <textarea rows={2} value={q.answer} onChange={(e) => answer(i, e.target.value)} disabled={!canAnswer} placeholder="回答后才能确认规格；回答会写进规格，代理按它执行" />
+              {q.suggestion && q.answer === q.suggestion && <span className="muted">AI 建议的初稿，确认前看一下，可以直接改</span>}
+              {q.suggestion && canAnswer && q.answer !== q.suggestion && (
+                <button type="button" className="btn btn-outline sm" onClick={(e) => { e.preventDefault(); answer(i, q.suggestion ?? ''); }}>
+                  恢复 AI 建议
+                </button>
+              )}
             </label>
           ))}
         </div>

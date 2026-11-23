@@ -68,6 +68,8 @@ export interface SpecQuestion {
   text: string;
   /** 使用者的回答；空表示还没有回答 */
   answer: string;
+  /** 代理生成规格时给的建议回答，作为回答的初稿；旧规格没有 */
+  suggestion?: string;
 }
 
 /** 一次代理会话留下的事实，全部来自事件流，不取自代理的自述 */
