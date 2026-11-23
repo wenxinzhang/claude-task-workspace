@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ObservationStore } from './observe.ts';
 import { canAbandon, canRetryApply, effectiveAttribution, isActionable, type Observation } from './observe-types.ts';
 
@@ -12,6 +12,10 @@ const newStore = () => {
   return new ObservationStore(dir);
 };
 afterEach(() => {
+  if (vi.isFakeTimers()) {
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
+  }
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
@@ -195,6 +199,7 @@ describe('流程审查会话', () => {
 });
 
 function observerSetup() {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-observer-flow-'));
   dirs.push(root);
   const workdir = path.join(root, 'work');
