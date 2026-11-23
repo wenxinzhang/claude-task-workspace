@@ -76,7 +76,7 @@ export function ProposalCard({ p, observations, status, busy, open, onToggle, ac
           }
         }}
       >
-        <span className={`pill ${meta.cls}`}>{p.status === 'applying' && status?.applyMode === 'rollback' ? '回滚中' : meta.label}</span>
+        <span className={`pill ${meta.cls}`}>{p.status === 'applying' && status?.applyMode === 'rollback' ? '回滚中' : p.status === 'applied' && p.auto ? '自动应用' : meta.label}</span>
         <span className="proposal-title">{p.title}</span>
         <span className={`comp-badge comp-${p.component}`}>{COMPONENT_LABEL[p.component]}</span>
         {p.component === 'gate' && <span className="pill err">门禁改动</span>}
@@ -126,7 +126,11 @@ export function ProposalCard({ p, observations, status, busy, open, onToggle, ac
       {p.status === 'applied' && !confirm && (
         <div className="obs-actions proposal-actions">
           {!p.probe && probeTargets.length > 0 && <button className="btn btn-sm" disabled={busy} onClick={() => setConfirm('probe')}>用原任务复验</button>}
-          {p.probe?.result === 'regressed' && <button className="btn btn-sm" disabled={applyDisabled} onClick={() => setConfirm('rollback')}>回滚此提案</button>}
+          {(p.auto || p.probe?.result === 'regressed') && (
+            <button className="btn btn-sm" data-usage="btn-proposal-undo" disabled={applyDisabled} onClick={() => setConfirm('rollback')}>
+              {p.auto ? '撤销自动应用' : '回滚此提案'}
+            </button>
+          )}
         </div>
       )}
       {confirm === 'probe' && p.status === 'applied' && (
@@ -143,9 +147,13 @@ export function ProposalCard({ p, observations, status, busy, open, onToggle, ac
       )}
       {confirm === 'rollback' && p.status === 'applied' && (
         <div className="confirm-panel" role="alertdialog" aria-label="回滚确认">
-          <p>复验显示退化。回滚会把受影响文件还原到应用前的备份；文件此后被改过时回滚会被拒绝，以保护你的改动。需要队列空闲。</p>
+          <p>
+            {p.auto
+              ? `${p.probe?.result === 'regressed' ? '这条提案是自动应用的，且复验显示退化。' : '这条提案是自动应用的。'}撤销会把受影响文件还原到应用前的备份；文件此后被改过时撤销会被拒绝，以保护你的改动。需要队列空闲。`
+              : '复验显示退化。回滚会把受影响文件还原到应用前的备份；文件此后被改过时回滚会被拒绝，以保护你的改动。需要队列空闲。'}
+          </p>
           <div className="obs-actions">
-            <button className="btn btn-sm btn-primary" disabled={applyDisabled} onClick={() => void act(async () => { await api(`/api/proposals/${p.id}/rollback`, 'POST'); setConfirm(null); })}>确认回滚</button>
+            <button className="btn btn-sm btn-primary" data-usage="btn-proposal-rollback" disabled={applyDisabled} onClick={() => void act(async () => { await api(`/api/proposals/${p.id}/rollback`, 'POST'); setConfirm(null); })}>确认回滚</button>
             <button className="btn btn-sm" onClick={() => setConfirm(null)}>取消</button>
           </div>
         </div>

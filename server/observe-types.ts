@@ -217,11 +217,17 @@ export interface Proposal {
   status: ProposalStatus;
   result?: ApplyResult;
   probe?: ProbeRecord;
+  /** 由自动应用发起（仅限低风险提示词提案）：可一键撤销，不必等复验退化 */
+  auto?: boolean;
 }
 
 export interface ObserverSettings {
   enabled: boolean;
   autoOptimize: boolean;
+  /** 使用事件采集开关：关闭后前端停止上报、服务端拒收新事件；已有数据仍可查询与清空 */
+  usageCollect: boolean;
+  /** 自动应用：仅自动诊断产出的低风险提示词提案（文件白名单内），默认关；应用仍走备份+验证+失败回滚 */
+  autoApply: boolean;
   exec: ExecConfig;
   /** 自动诊断阈值：可行动新问题达到该数量才触发（代码默认值，不暴露为界面设置） */
   minNewObservations: number;
@@ -296,6 +302,8 @@ export function componentRiskRank(c: ProposalComponent): number {
 export const DEFAULT_OBSERVER_SETTINGS: ObserverSettings = {
   enabled: false,
   autoOptimize: false,
+  usageCollect: true,
+  autoApply: false,
   exec: { ...DEFAULT_EXEC, budgetUsd: 2 },
   minNewObservations: 3,
   cooldownHours: 6,
@@ -325,6 +333,9 @@ export function normalizeObserver(raw: unknown): ObserverSettings {
   return {
     enabled: Boolean(r.enabled),
     autoOptimize: Boolean(r.autoOptimize),
+    // 旧配置没有这个字段时保持采集开启（默认值），显式存过 false 的尊重原值
+    usageCollect: r.usageCollect === undefined ? true : Boolean(r.usageCollect),
+    autoApply: Boolean(r.autoApply),
     exec,
     minNewObservations: Math.round(clamp(r.minNewObservations, 1, 50, DEFAULT_OBSERVER_SETTINGS.minNewObservations)),
     cooldownHours: clamp(r.cooldownHours, 0.5, 168, DEFAULT_OBSERVER_SETTINGS.cooldownHours),

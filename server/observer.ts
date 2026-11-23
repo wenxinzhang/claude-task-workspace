@@ -116,6 +116,39 @@ export function createObserver(deps: ObserverDeps): Observer {
       }
     }
   };
+  /** 使用摩擦采集：与 collectFlow 同款——算指标、按 key 去重入台账，重复调用不重复入库 */
+  const collectUsage = (): number => {
+    if (!isEnabled()) return 0;
+    const known = new Set(observations.list().map((o) => o.id));
+    let added = 0;
+    for (const d of usageFindings(usageMetrics())) {
+      const rec = observations.add({ projectId: d.projectId, kind: d.kind, severity: d.severity, title: d.title, detail: d.detail, context: {}, source: 'code', key: d.key });
+      if (!known.has(rec.id)) added++;
+    }
+    return added;
+  };
+  const usageMetrics = (windowDays = 7): UsageMetrics => ({
+    ...computeUsageMetrics(usage.list(), windowDays),
+    drawerDwell: usage.drawerDwellMs(windowDays * 24 * 3_600_000),
+  });
+  /** 应用提案（手动与自动共用）：单飞锁 + 空闲检查 + 清旧结果 + 脱离进程应用器 */
+  const startApply = (proposalId: string): { ok: boolean; reason?: string } => {
+    const p = proposals.get(proposalId);
+    // 应用没成功、文件已还原的提案可以重试（如应用途中机器休眠或进程被打断）；手动回滚的、文件没还原的不行
+    if (!p || (p.status !== 'pending' && !canRetryApply(p))) return { ok: false, reason: '只有待确认或应用未成功的提案可以应用' };
+    if (applying) return { ok: false, reason: '已有提案正在应用' };
+    if (!isIdle()) return { ok: false, reason: '队列不空闲，请等任务结束后再应用' };
+    applying = proposalId;
+    applyMode = 'apply';
+    proposals.setStatus(proposalId, 'applying');
+    // 上一次应用留下的结果文件不能被当成这一次的结果
+    fs.rmSync(resultPath(root, proposalId), { force: true });
+    // 应用子进程从磁盘读提案：先落盘再 spawn，避免自动应用时 300ms 节流窗口内读不到新提案
+    proposals.flush();
+    spawnApply('apply', proposalId);
+    emitStatus();
+    return { ok: true };
+  };
   const optimizer = new Optimizer({
     observations,
     proposals,
@@ -126,6 +159,7 @@ export function createObserver(deps: ObserverDeps): Observer {
     getApplying: () => applying,
     onStateChange: () => emitStatus(),
     getFlow: () => flowSection(projectMetrics()),
+    onAutoApply: (id) => startApply(id).ok,
   });
   wireCollector({ store, queue, observations, isEnabled });
   /** 进行中的复验：taskId → 提案与复验前门禁。
@@ -309,25 +343,12 @@ export function createObserver(deps: ObserverDeps): Observer {
       if (logs.some((l) => l.includes('部署已手动停止'))) return;
       observations.add({ projectId, kind: 'deploy_fail', severity: 'error', title: '部署失败', detail: logs.slice(-5).join('\n'), context: {}, source: 'code' });
     },
-    startApply: (proposalId: string) => {
-      const p = proposals.get(proposalId);
-      // 应用没成功、文件已还原的提案可以重试（如应用途中机器休眠或进程被打断）；手动回滚的、文件没还原的不行
-      if (!p || (p.status !== 'pending' && !canRetryApply(p))) return { ok: false, reason: '只有待确认或应用未成功的提案可以应用' };
-      if (applying) return { ok: false, reason: '已有提案正在应用' };
-      if (!isIdle()) return { ok: false, reason: '队列不空闲，请等任务结束后再应用' };
-      applying = proposalId;
-      applyMode = 'apply';
-      proposals.setStatus(proposalId, 'applying');
-      // 上一次应用留下的结果文件不能被当成这一次的结果
-      fs.rmSync(resultPath(root, proposalId), { force: true });
-      spawnApply('apply', proposalId);
-      emitStatus();
-      return { ok: true };
-    },
+    startApply,
     startRollback: (proposalId: string) => {
       const p = proposals.get(proposalId);
       if (!p || p.status !== 'applied') return { ok: false, reason: '只有已应用的提案可以回滚' };
-      if (p.probe?.result !== 'regressed') return { ok: false, reason: '只有复验退化的提案可以回滚' };
+      // 自动应用过的提案可一键撤销，不必等复验退化；手动应用的仍只有复验退化才回滚
+      if (!p.auto && p.probe?.result !== 'regressed') return { ok: false, reason: '只有复验退化或自动应用的提案可以回滚' };
       if (applying) return { ok: false, reason: '已有提案正在应用' };
       if (!isIdle()) return { ok: false, reason: '队列不空闲，请等任务结束后再回滚' };
       applying = proposalId;

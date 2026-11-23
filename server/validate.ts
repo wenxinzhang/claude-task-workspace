@@ -70,6 +70,8 @@ export function validateSettingsPatch(body: any): SettingsPatch {
     patch.observer = {};
     if (o.enabled !== undefined) patch.observer.enabled = Boolean(o.enabled);
     if (o.autoOptimize !== undefined) patch.observer.autoOptimize = Boolean(o.autoOptimize);
+    if (o.usageCollect !== undefined) patch.observer.usageCollect = Boolean(o.usageCollect);
+    if (o.autoApply !== undefined) patch.observer.autoApply = Boolean(o.autoApply);
     if (o.minNewObservations !== undefined) {
       const n = Number(o.minNewObservations);
       if (!Number.isInteger(n) || n < 1 || n > 50) throw new Error('诊断阈值需在 1-50 之间');

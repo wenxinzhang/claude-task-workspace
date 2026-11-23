@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { AgentRequest, AgentResult } from './agent.ts';
-import { canAutoOptimize, normalizeProposals, Optimizer } from './optimize.ts';
+import { canAutoApplyProposal, canAutoOptimize, normalizeProposals, Optimizer } from './optimize.ts';
 import { ObservationStore } from './observe.ts';
 import { DEFAULT_OBSERVER_SETTINGS, type Observation } from './observe-types.ts';
 import { ProposalStore } from './proposal-store.ts';
@@ -99,7 +99,7 @@ describe('Optimizer', () => {
     ...over,
   });
 
-  function setup(opts: { enabled?: boolean; autoOptimize?: boolean; idle?: boolean; newCount?: number; structured?: unknown; ok?: boolean } = {}) {
+  function setup(opts: { enabled?: boolean; autoOptimize?: boolean; autoApply?: boolean; autoApplyResult?: boolean; applying?: string | null; idle?: boolean; newCount?: number; structured?: unknown; ok?: boolean; onRun?: () => void } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-opt-'));
     const observations = new ObservationStore(root);
     const proposals = new ProposalStore(root);
@@ -107,25 +107,35 @@ describe('Optimizer', () => {
     let calls = 0;
     let captured: AgentRequest | undefined;
     let structured: unknown = opts.structured ?? { proposals: [] };
+    let autoApply = opts.autoApply === true;
     const run = async (req: AgentRequest): Promise<AgentResult> => {
       calls++;
       captured = req;
+      opts.onRun?.();
       return { ok: opts.ok !== false, text: '', structured, evidence: ev };
     };
+    const autoAppliedIds: string[] = [];
     const optimizer = new Optimizer({
       observations,
       proposals,
-      getSettings: () => ({ observer: { ...DEFAULT_OBSERVER_SETTINGS, enabled: opts.enabled !== false, autoOptimize: opts.autoOptimize !== false } }),
+      getSettings: () => ({ observer: { ...DEFAULT_OBSERVER_SETTINGS, enabled: opts.enabled !== false, autoOptimize: opts.autoOptimize !== false, autoApply } }),
       isIdle: () => opts.idle !== false,
       toolRoot: root,
       run,
+      getApplying: () => opts.applying ?? null,
+      onAutoApply: (id) => {
+        autoAppliedIds.push(id);
+        return opts.autoApplyResult !== false;
+      },
     });
     return {
       root,
       observations,
       proposals,
       optimizer,
+      autoAppliedIds,
       setStructured: (s: unknown) => { structured = s; },
+      setAutoApply: (v: boolean) => { autoApply = v; },
       get calls() { return calls; },
       get captured() { return captured; },
       cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
@@ -213,4 +223,118 @@ describe('Optimizer', () => {
       ctx.cleanup();
     }
   });
+
+describe('canAutoApplyProposal 自动应用判定', () => {
+  const s = { enabled: true, autoApply: true };
+  const promptDraft = { component: 'prompt' as const, edits: [{ file: 'server/prompts.ts', find: 'a', replace: 'b' }] };
+  it('全条件满足才允许；开关、组件、空闲、单飞任一否决都不允许', () => {
+    expect(canAutoApplyProposal(promptDraft, s, true, null)).toBe(true);
+    expect(canAutoApplyProposal(promptDraft, { ...s, enabled: false }, true, null)).toBe(false);
+    expect(canAutoApplyProposal(promptDraft, { ...s, autoApply: false }, true, null)).toBe(false);
+    expect(canAutoApplyProposal(promptDraft, s, false, null)).toBe(false);
+    expect(canAutoApplyProposal(promptDraft, s, true, 'p1')).toBe(false);
+    expect(canAutoApplyProposal({ ...promptDraft, component: 'gate' }, s, true, null)).toBe(false);
+    expect(canAutoApplyProposal({ ...promptDraft, component: 'flow' }, s, true, null)).toBe(false);
+    expect(canAutoApplyProposal({ ...promptDraft, component: 'integration' }, s, true, null)).toBe(false);
+  });
+  it('component 标 prompt 但改了提示词白名单外的文件：不允许（文件级守卫）', () => {
+    expect(canAutoApplyProposal({ ...promptDraft, edits: [{ file: 'server/queue.ts', find: 'a', replace: 'b' }] }, s, true, null)).toBe(false);
+    expect(canAutoApplyProposal({ ...promptDraft, edits: [{ file: 'server/prompts.ts', find: 'a', replace: 'b' }, { file: 'server/gate.ts', find: 'a', replace: 'b' }] }, s, true, null)).toBe(false);
+    expect(canAutoApplyProposal({ ...promptDraft, edits: [{ file: 'server/observe-prompts.ts', find: 'a', replace: 'b' }] }, s, true, null)).toBe(true);
+  });
+});
+
+describe('Optimizer 自动应用（2B）', () => {
+  const draft = (title: string, component: string, file: string, problemId: string) => ({
+    title, component, problemIds: [problemId], rootCause: '', edits: [{ file, find: 'a', replace: 'b' }], risk: '', verification: '',
+  });
+
+  it('自动诊断产出的低风险提示词提案发起自动应用并标 auto；门禁与非白名单文件不自动应用', async () => {
+    const ctx = setup({ autoApply: true });
+    try {
+      const problemId = ctx.observations.list()[0].id;
+      ctx.setStructured({ proposals: [
+        draft('门禁改动', 'gate', 'server/gate.ts', problemId),
+        draft('提示词改动', 'prompt', 'server/prompts.ts', problemId),
+        draft('提示词但改流程文件', 'prompt', 'server/queue.ts', problemId),
+      ] });
+      await ctx.optimizer.maybeAuto();
+      expect(ctx.autoAppliedIds).toHaveLength(1);
+      const list = ctx.proposals.list();
+      const autoP = list.find((p) => p.id === ctx.autoAppliedIds[0])!;
+      expect(autoP.title).toBe('提示词改动');
+      expect(autoP.auto).toBe(true);
+      expect(list.filter((p) => p.auto)).toHaveLength(1);
+    } finally {
+      ctx.observations.flush();
+      ctx.proposals.flush();
+      ctx.cleanup();
+    }
+  });
+
+  it('autoApply 默认关闭：自动诊断照常产出提案，但不发起自动应用', async () => {
+    const ctx = setup();
+    try {
+      const problemId = ctx.observations.list()[0].id;
+      ctx.setStructured({ proposals: [draft('提示词改动', 'prompt', 'server/prompts.ts', problemId)] });
+      await ctx.optimizer.maybeAuto();
+      expect(ctx.proposals.list()).toHaveLength(1);
+      expect(ctx.autoAppliedIds).toHaveLength(0);
+      expect(ctx.proposals.list()[0].auto).toBeUndefined();
+    } finally {
+      ctx.observations.flush();
+      ctx.proposals.flush();
+      ctx.cleanup();
+    }
+  });
+
+  it('手动诊断不自动应用：即使 autoApply 开着，也要人确认', async () => {
+    const ctx = setup({ autoApply: true });
+    try {
+      const problemId = ctx.observations.list()[0].id;
+      ctx.setStructured({ proposals: [draft('提示词改动', 'prompt', 'server/prompts.ts', problemId)] });
+      await ctx.optimizer.runManual();
+      await new Promise((res) => setTimeout(res, 30));
+      expect(ctx.proposals.list()).toHaveLength(1);
+      expect(ctx.autoAppliedIds).toHaveLength(0);
+    } finally {
+      ctx.observations.flush();
+      ctx.proposals.flush();
+      ctx.cleanup();
+    }
+  });
+
+  it('诊断期间关掉 autoApply：判定重取当前设置，不再自动应用', async () => {
+    const ctx = setup({ autoApply: true, onRun: () => ctx.setAutoApply(false) });
+    try {
+      const problemId = ctx.observations.list()[0].id;
+      ctx.setStructured({ proposals: [draft('提示词改动', 'prompt', 'server/prompts.ts', problemId)] });
+      await ctx.optimizer.maybeAuto();
+      expect(ctx.proposals.list()).toHaveLength(1);
+      expect(ctx.autoAppliedIds).toHaveLength(0);
+      expect(ctx.proposals.list()[0].auto).toBeUndefined();
+    } finally {
+      ctx.observations.flush();
+      ctx.proposals.flush();
+      ctx.cleanup();
+    }
+  });
+
+  it('应用发起失败（单飞锁被占）：不标 auto，提案留在待确认', async () => {
+    const ctx = setup({ autoApply: true, autoApplyResult: false });
+    try {
+      const problemId = ctx.observations.list()[0].id;
+      ctx.setStructured({ proposals: [draft('提示词改动', 'prompt', 'server/prompts.ts', problemId)] });
+      await ctx.optimizer.maybeAuto();
+      expect(ctx.autoAppliedIds).toHaveLength(1);
+      const p = ctx.proposals.list()[0];
+      expect(p.auto).toBeUndefined();
+      expect(p.status).toBe('pending');
+    } finally {
+      ctx.observations.flush();
+      ctx.proposals.flush();
+      ctx.cleanup();
+    }
+  });
+});
 });

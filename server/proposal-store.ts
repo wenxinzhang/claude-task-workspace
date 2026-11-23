@@ -83,6 +83,15 @@ export class ProposalStore extends EventEmitter {
     return structuredClone(this.data.removed ?? []);
   }
 
+  /** 标记为自动应用发起（只在自动应用真的启动后调用） */
+  markAuto(id: string): void {
+    const p = this.data.proposals.find((x) => x.id === id);
+    if (!p) return;
+    p.auto = true;
+    this.scheduleSave();
+    this.emit('change');
+  }
+
   /** 记录 Probe 式复验结论 */
   setProbe(id: string, probe: ProbeRecord): Proposal | undefined {
     const p = this.data.proposals.find((x) => x.id === id);

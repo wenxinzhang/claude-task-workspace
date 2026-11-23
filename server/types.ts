@@ -508,7 +508,7 @@ export const DEFAULT_EXEC: ExecConfig = {
 // 与 observe-types 的 DEFAULT_OBSERVER_SETTINGS 一致性由 observe-settings.test.ts 锚定
 export const DEFAULT_SETTINGS: Settings = {
   feishu: { appId: '', appSecret: '' },
-  observer: { enabled: false, autoOptimize: false, exec: { ...DEFAULT_EXEC, budgetUsd: 2 }, minNewObservations: 3, cooldownHours: 6 },
+  observer: { enabled: false, autoOptimize: false, usageCollect: true, autoApply: false, exec: { ...DEFAULT_EXEC, budgetUsd: 2 }, minNewObservations: 3, cooldownHours: 6 },
   skills: { libraryDir: '' },
   models: [],
 };

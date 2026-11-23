@@ -16,6 +16,7 @@ import {
   type OptimizeRun,
   type Proposal,
   type ProposalComponent,
+  type ProposalEdit,
 } from './observe-types.ts';
 import type { ProposalStore } from './proposal-store.ts';
 
@@ -33,6 +34,19 @@ export function canAutoOptimize(
 
 /** 一条待入库的提案（id/at/status 由 ProposalStore 补） */
 export type ProposalDraft = Omit<Proposal, 'id' | 'at' | 'status'>;
+
+/** 自动应用的文件白名单：只允许改这两个提示词文件。component 标 prompt 但改别的文件也不放行 */
+const AUTO_APPLY_FILES = ['server/prompts.ts', 'server/observe-prompts.ts'];
+
+/** 自动应用判定：开关、组件、文件白名单、空闲、单飞，全部满足才允许（仅用于自动诊断产出的提案） */
+export function canAutoApplyProposal(
+  d: { component: ProposalComponent; edits: ProposalEdit[] },
+  s: { enabled: boolean; autoApply: boolean },
+  idle: boolean,
+  applying: string | null,
+): boolean {
+  return s.enabled && s.autoApply && d.component === 'prompt' && idle && !applying && d.edits.length > 0 && d.edits.every((e) => AUTO_APPLY_FILES.includes(e.file));
+}
 
 /** 诊断输出归一：形状校验、组件必填、problemIds 过滤、白名单预检、≤3 条、按风险秩稳定排序 */
 export function normalizeProposals(raw: unknown, knownProblemIds: Set<string>): ProposalDraft[] {
@@ -70,9 +84,10 @@ export function normalizeFindings(raw: unknown): FlowReviewFinding[] {
   if (!Array.isArray(arr)) return [];
   const out: FlowReviewFinding[] = [];
   for (const item of arr) {
-    const f = item as { title?: unknown; detail?: unknown; attribution?: unknown; component?: unknown } | null;
+    const f = item as { title?: unknown; detail?: unknown; suggestion?: unknown; attribution?: unknown; component?: unknown } | null;
     if (!f || typeof f.title !== 'string' || !f.title.trim()) continue;
     const finding: FlowReviewFinding = { title: f.title.trim(), detail: typeof f.detail === 'string' ? f.detail : '' };
+    if (typeof f.suggestion === 'string' && f.suggestion.trim()) finding.suggestion = f.suggestion.trim();
     if (ATTRIBUTIONS.includes(f.attribution as ObservationAttribution)) finding.attribution = f.attribution as ObservationAttribution;
     if (PROPOSAL_COMPONENTS.includes(f.component as ProposalComponent)) finding.component = f.component as ProposalComponent;
     out.push(finding);
@@ -108,6 +123,8 @@ export interface OptimizerDeps {
   onStateChange?: () => void;
   /** 流程体检段落（由流程指标渲染）；不提供则审查只看台账 */
   getFlow?: () => string;
+  /** 发起自动应用（observer.startApply）；返回是否真的发起了。不注入则自动应用不生效 */
+  onAutoApply?: (proposalId: string) => boolean;
 }
 
 /** 诊断会话：中性 cwd 绕开工具目录的 .claude 门禁，只读授权 server/client */
@@ -136,7 +153,7 @@ export class Optimizer {
       s,
     );
     if (!ok) return;
-    await this.diagnose(s);
+    await this.diagnose(s, true);
   }
 
   async runManual(): Promise<{ started: boolean; reason?: string }> {
@@ -150,7 +167,8 @@ export class Optimizer {
     return { started: true };
   }
 
-  private async diagnose(s: ObserverSettings): Promise<void> {
+  /** auto=true 仅限自动诊断路径：产出的低风险提示词提案可自动应用；手动诊断始终等人确认 */
+  private async diagnose(s: ObserverSettings, auto = false): Promise<void> {
     this.diagnosing = true;
     try {
       this.deps.onStateChange?.();
@@ -188,6 +206,7 @@ export class Optimizer {
               severity: 'warn',
               title: f.title,
               detail: f.detail,
+              suggestion: f.suggestion,
               context: f.component ? { component: f.component } : {},
               source: 'llm',
               attribution: f.attribution,
@@ -198,7 +217,19 @@ export class Optimizer {
         outcome.findings = new Set(findingIds).size;
         const known = new Set([...unresolved.map((o) => o.id), ...findingIds]);
         const drafts = normalizeProposals(resolveRefs(res.structured, findingIds), known);
-        for (const d of drafts) this.deps.proposals.add(d);
+        // 自动应用每次审查至多一条（单飞）：发起成功才标 auto，失败的留在待确认等人处理
+        let autoApplied = false;
+        for (const d of drafts) {
+          const rec = this.deps.proposals.add(d);
+          // 诊断会话最长 10 分钟：判定重取当前设置，期间关掉开关就不再自动应用
+          const current = this.deps.getSettings().observer ?? DEFAULT_OBSERVER_SETTINGS;
+          if (auto && !autoApplied && canAutoApplyProposal(d, current, this.deps.isIdle(), this.deps.getApplying?.() ?? null)) {
+            if (this.deps.onAutoApply?.(rec.id)) {
+              autoApplied = true;
+              this.deps.proposals.markAuto(rec.id);
+            }
+          }
+        }
         outcome.ok = true;
         outcome.proposals = drafts.length;
       } else {

@@ -41,6 +41,36 @@ describe('观察者设置接入', () => {
     }
   });
 
+  it('usageCollect 默认开启，可关闭并落盘往返，补丁按布尔归一', () => {
+    expect(DEFAULT_OBSERVER_SETTINGS.usageCollect).toBe(true);
+    const dir = tmpDir();
+    try {
+      const store = new Store(dir);
+      expect(store.getSettings().observer.usageCollect).toBe(true);
+      const s = store.updateSettings({ observer: { usageCollect: false } });
+      expect(s.observer.usageCollect).toBe(false);
+      expect(new Store(dir).getSettings().observer.usageCollect).toBe(false);
+      expect(validateSettingsPatch({ observer: { usageCollect: 1 } }).observer?.usageCollect).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('autoApply 默认关闭，可开启并落盘往返，补丁按布尔归一', () => {
+    expect(DEFAULT_OBSERVER_SETTINGS.autoApply).toBe(false);
+    const dir = tmpDir();
+    try {
+      const store = new Store(dir);
+      expect(store.getSettings().observer.autoApply).toBe(false);
+      const s = store.updateSettings({ observer: { autoApply: true } });
+      expect(s.observer.autoApply).toBe(true);
+      expect(new Store(dir).getSettings().observer.autoApply).toBe(true);
+      expect(validateSettingsPatch({ observer: { autoApply: 1 } }).observer?.autoApply).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('validateSettingsPatch：observer 布尔/阈值/冷却/exec 校验，非法值拒绝', () => {
     const p = validateSettingsPatch({ observer: { enabled: true, autoOptimize: false, minNewObservations: 5, cooldownHours: 12, exec: { provider: 'claude', budgetUsd: 3 } } });
     expect(p.observer?.enabled).toBe(true);

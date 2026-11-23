@@ -266,6 +266,27 @@ describe('startRollback', () => {
     ctx.observer.proposals.setProbe(p.id, { taskId: 't1', beforeVerdict: 'fail', afterVerdict: 'pass', result: 'improved', at: 1 });
     expect(ctx.observer.startRollback(p.id).ok).toBe(false); // improved
   });
+
+  it('自动应用过的提案可一键撤销：无复验结论也允许回滚', () => {
+    const ctx = obsSetup();
+    const p = ctx.observer.proposals.add(pDraft({ auto: true }));
+    ctx.observer.proposals.setStatus(p.id, 'applied');
+    const r = ctx.observer.startRollback(p.id);
+    expect(r.ok).toBe(true);
+    expect(ctx.spawned).toEqual([{ mode: 'rollback', proposalId: p.id }]);
+  });
+});
+
+describe('startApply 落盘时序', () => {
+  it('发起应用前提案已落盘：应用子进程冷启动读盘不会扑空（自动应用时序锚点）', () => {
+    const ctx = obsSetup();
+    const p = ctx.observer.proposals.add(pDraft());
+    const r = ctx.observer.startApply(p.id);
+    expect(r.ok).toBe(true);
+    // 不等 300ms 节流：立刻读盘，提案必须已在文件里且状态为 applying
+    const onDisk = JSON.parse(fs.readFileSync(path.join(ctx.root, 'data', 'proposals.json'), 'utf8')) as { proposals: { id: string; status: string }[] };
+    expect(onDisk.proposals.find((x) => x.id === p.id)?.status).toBe('applying');
+  });
 });
 
 describe('collect 系列', () => {
