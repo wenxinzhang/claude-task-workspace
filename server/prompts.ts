@@ -1,6 +1,7 @@
 import type { LocalAttachment } from './attachments.ts';
 import { renderCriteria } from './spec.ts';
-import type { Criterion, Task, TestEnv } from './types.ts';
+import { allowedExecutables, effectiveAllowedTools, textLines } from './shared.ts';
+import type { Criterion, ExecConfig, Task, TestEnv } from './types.ts';
 
 /** 理解阶段：只读代码，产出结构化规格（结构由 SPEC_SCHEMA 约束） */
 export function analysisPrompt(task: Pick<Task, 'title' | 'description'>, files?: LocalAttachment[], knowledge = ''): string {
@@ -18,12 +19,13 @@ ${task.description || '（无）'}${attachmentSection(files)}${knowledge}
 用简体中文，按给定的结构输出。规格要让人一分钟内看完并确认：只写结论，不写推导过程。各字段含义：
 - goal：一句话说明要做成什么
 - rootCause：不超过三句。缺陷的根因，指到具体文件和位置；需求类任务写现状。没能确认时写明「未确认」和原因
-- scope：允许改动的文件或目录，路径相对当前目录。只列确实需要改的；实现时超出这个范围的改动会被拦下，交人工确认
+- scope：允许改动的文件或目录，路径相对当前目录。只列确实需要改的，计划新增的回归测试文件或所在测试目录也要列入；实现时超出这个范围的改动（包括新增的测试文件）会被拦下，交人工确认
 - steps：实现步骤，不超过 5 步，每步一句
 - criteria：验收项。只列判定这次修改是否成立所必需的项，最多 8 条（超出的会被丢弃），同类结果合并成一条；每条一句，只描述一个可以判定是否成立的结果。method 取值：
-  - auto（自动验证）：代码改完后，在本机不借助浏览器就能检查，例如构建、类型检查、单元测试、读代码可确认的逻辑。how 写一条可以直接执行的命令，或要核对的代码位置；命令只用「可用的验证命令」里的程序
+  - auto（自动验证）：代码改完后，在本机不借助浏览器就能检查，例如构建、类型检查、单元测试、读代码可确认的逻辑。how 写一条可以直接执行的命令，或要核对的代码位置；命令只用「可用的验证命令」段落里列出的已放行程序，该段落说没有放行程序时不要写命令，写要核对的代码位置
   - manual（人工验证）：需要在浏览器里看效果，或需要测试环境数据、部署后才能确认。how 写去哪里看、怎么操作、预期是什么。同一个页面上的多个现象合并成一条
   说明：执行和验证都在本机无头会话中进行，没有浏览器；测试环境运行的是部署前的旧版本，在代码部署前看不到本次改动的效果
+  尽量至少给一条 auto 验收项（例如类型检查、构建或读代码可核对的逻辑）：一条 auto 都没有时，任务即使改完也只能整体转人工验收
   本次改动了哪些文件、是否超出 scope，由系统按 git 记录核对，不要写成验收项（例如「git status 只列出某文件」）：工作区里常有别的任务或使用者留下的未提交改动，这类验收项会被判为未通过
 - questions：必须由使用者拍板才能动手的问题，例如需求有两种理解、要不要改接口或数据。每条写成一个可以直接回答的问句。你能通过读代码确认的事情不要写成问题；没有就给空数组
 - risks：仅供知悉的风险，不超过 3 条，每条一句，没有就给空数组`;
@@ -35,10 +37,23 @@ export function scratchSection(dir: string): string {
   return `\n\n## 临时文件\n自检用的临时脚本、临时页面等写到这个目录：${dir}\n它在代码仓库之外，任务结束后自动清理。不要把临时文件写进项目目录：项目里范围外的新文件会被拦下交人工确认。`;
 }
 
-/** 已确认可用的验证命令：告诉代理哪些命令可以直接执行 */
-export function verifySection(commands: string[]): string {
-  if (!commands.length) return '';
-  return `\n\n## 可用的验证命令（已放行，可以直接执行）\n${commands.map((c) => `- ${c}`).join('\n')}\n每条命令单独执行，不要用分号、&& 或管道把多条命令拼在一起，拼接的命令会被权限拒绝。其他程序的命令也可能被拒绝。`;
+/** 已确认可用的验证命令与实际放行的命令程序：告诉代理哪些命令可以直接执行、自动验收项能用哪些程序 */
+export function verifySection(exec: Pick<ExecConfig, 'provider' | 'allowedTools' | 'verifyCommands'>): string {
+  const commands = textLines(exec.verifyCommands);
+  // Claude Code 按白名单放行程序；把实际生效的白名单告诉代理，避免自动验收项写出会被拒绝的命令
+  const allowed = exec.provider === 'claude' ? allowedExecutables(effectiveAllowedTools(exec)) : new Set<string>();
+  if (!commands.length && !allowed.size && exec.provider !== 'claude') return '';
+  const lines = commands.map((c) => `- ${c}`);
+  if (exec.provider === 'claude') {
+    lines.push(
+      allowed.has('*')
+        ? '- 命令程序不限，均可直接执行'
+        : allowed.size
+          ? `- 已放行的命令程序：${[...allowed].join('、')}。自动验收项里的命令只用这些程序，优先用上面列出的已确认命令（部分程序只放行了特定子命令）；其他程序会被权限拒绝，该项只能转人工`
+          : '- 当前没有放行任何命令程序：自动验收项不要写命令，写要核对的代码位置；只能靠命令验证的项标为 manual',
+    );
+  }
+  return `\n\n## 可用的验证命令（已放行，可以直接执行）\n${lines.join('\n')}\n每条命令单独执行，不要用分号、&& 或管道把多条命令拼在一起，拼接的命令会被权限拒绝。其他程序的命令也可能被拒绝。`;
 }
 
 /** 附件段落：给出本地绝对路径，让代理查看截图 */

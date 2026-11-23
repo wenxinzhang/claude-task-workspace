@@ -620,7 +620,15 @@ app.post(
       const startedAt = Date.now();
       const base = { projectId: p.id, kind: 'push' as const, startedAt, branch: before.branch, upstream: before.upstream, before: before.head };
       try {
-        await git([...authArgs(p.git, before.remote), 'push'], p.workdir);
+        try {
+          await git([...authArgs(p.git, before.remote), 'push'], p.workdir);
+        } catch (e) {
+          // 同步和推送之间远端又进了新提交（共用仓库常见）：再同步一次并重试一回；仍被拒就放弃，绝不强推
+          if (!/\[rejected\]|fetch first|non-fast-forward/i.test((e as Error).message)) throw e;
+          const again = await syncAndRecord(p, before);
+          if (again.status === 'conflict') throw new Error(`没有推送：${again.error ?? '远端的新提交没能自动合并'}`);
+          await git([...authArgs(p.git, before.remote), 'push'], p.workdir);
+        }
         const after = await repoInfo(p.workdir);
         history.add({
           ...base,

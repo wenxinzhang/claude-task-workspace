@@ -10,7 +10,7 @@ import { commitMessage, commitTaskChanges, git, skippedDiff, snapshot, taskChang
 import { ensureMemoryDir } from './memory.ts';
 import { runPreflight } from './preflight.ts';
 import { analysisPrompt, historySection, implementPrompt, memorySection, relatedHistory, scratchSection, skillSection, verifyPrompt, verifySection } from './prompts.ts';
-import { openQuestions, textLines } from './shared.ts';
+import { openQuestions } from './shared.ts';
 import { runShell } from './shell.ts';
 import { splitSkills, stageSkills } from './skills.ts';
 import { normalizeSpec, renderSpec, SPEC_SCHEMA, specHash } from './spec.ts';
@@ -204,6 +204,16 @@ export class Queue extends EventEmitter {
     this.runners.get(projectId)?.abort?.abort();
   }
 
+  /** 失败/被拦的任务留下未提交改动时暂停队列：这些文件会被后续任务当成「执行前已有的改动」，
+   * 碰到它们的任务都会被门禁 hold 转人工验收。先处理（提交或还原）再启动，避免整批任务被污染 */
+  private holdForLeftover(runner: Runner, projectId: string, files: string[] | undefined, log: (l: string) => void) {
+    if (!files?.length) return;
+    runner.running = false;
+    runner.autoPause = false;
+    this.setHeld(projectId, true);
+    log(`队列已暂停：本任务留下了 ${files.length} 个未提交的改动文件（${files.slice(0, 8).join('、')}${files.length > 8 ? ' 等' : ''}）。请先在代码目录里提交或还原它们，再启动队列；否则后续任务改到这些文件时都会因「执行前已有改动」转人工验收`);
+  }
+
   forget(projectId: string) {
     this.runners.delete(projectId);
   }
@@ -383,7 +393,7 @@ export class Queue extends EventEmitter {
       // 库里的 skill 放进同一个临时目录：它本来就是附加目录，任务结束一起清掉
       this.copySkillLibrary(scratch, log);
       const base = { cwd: workdir, exec, images, addDirs: [...dirs, ...mem.dirs, scratch], onLog: log, onProgress, signal };
-      const verifyHint = verifySection(textLines(exec.verifyCommands)) + scratchSection(scratch);
+      const verifyHint = verifySection(exec) + scratchSection(scratch);
 
       // ---------- 实现 ----------
       const knowledge = history + mem.section + this.skills(exec, 'implement', log) + verifyHint;
@@ -495,6 +505,7 @@ export class Queue extends EventEmitter {
 
       if (gate.verdict === 'fail') {
         this.store.setStatus(id, 'blocked', { error: gateError(gate), leftover: changed });
+        this.holdForLeftover(runner, task.projectId, changed, log);
         return;
       }
       // 需要人工验收时也提交（只提交到本地）：否则这些改动会被队列里的下一个任务当成执行前已有的改动
@@ -510,10 +521,14 @@ export class Queue extends EventEmitter {
         this.store.setStatus(id, exec.passTarget, { error: commitError, manualChecks: manualChecksText(gate) || undefined, leftover: left });
         if (exec.passTarget === 'done') this.emit('done', id);
       }
+      // 没提交成功的改动同样会被后续任务当成「执行前已有的改动」：与失败路径一致，先暂停让使用者处理
+      this.holdForLeftover(runner, task.projectId, left, log);
     } catch (e) {
       const msg = message(e);
       log(`错误：${msg}`);
       this.store.setStatus(id, 'blocked', { error: msg, leftover: changed ?? (leftover.length ? leftover : undefined) });
+      // 手动停止不暂停：使用者在场，自行决定是否继续；失败留下的改动要先处理再跑后续任务
+      if (!signal.aborted) this.holdForLeftover(runner, task.projectId, changed ?? (leftover.length ? leftover : undefined), log);
     } finally {
       try {
         if (scratch) fs.rmSync(scratch, { recursive: true, force: true });
@@ -638,7 +653,7 @@ export class Queue extends EventEmitter {
       const res = await this.run({
         stage: 'analysis',
         access: 'read',
-        prompt: analysisPrompt(task, files, history + this.skills(exec, 'analysis', log) + verifySection(textLines(exec.verifyCommands))),
+        prompt: analysisPrompt(task, files, history + this.skills(exec, 'analysis', log) + verifySection(exec)),
         cwd: workdir,
         exec,
         skills: exec.provider === 'claude' ? stageSkills(exec, 'analysis') : [],
