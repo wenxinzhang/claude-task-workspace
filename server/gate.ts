@@ -58,6 +58,14 @@ export function sessionProblem(e: RunEvidence): string | null {
   return null;
 }
 
+/**
+ * 实现会话正常结束却一个工具都没调用：多半是模型误判了任务缺失（例如被上下文里的截断标记误导），
+ * 值得用同一份规格自动重试一次。toolCalls 为 null 表示代理不提供事件流，无从判断，不重试
+ */
+export function shouldRetryNoAction(impl: { ok: boolean; evidence: { toolCalls: number | null } }): boolean {
+  return impl.ok && impl.evidence.toolCalls === 0;
+}
+
 export interface GateInput {
   criteria: Criterion[];
   scope: string[];
@@ -157,7 +165,23 @@ export function evaluateGate(input: GateInput, now = Date.now()): GateResult {
   const pendingAuto = pending.filter((i) => i.method !== 'manual');
   const pendingManual = pending.filter((i) => i.method === 'manual');
   if (failed.length) fail(`验收项未通过：${failed.map((i) => i.id).join('、')}`);
-  if (pendingAuto.length) hold(`${pendingAuto.length} 个验收项没有得到自动验证：${pendingAuto.map((i) => i.id).join('、')}`);
+  if (pendingAuto.length) {
+    // 按原因分组转人工：体检里的转人工原因分布才能分清是验证模型漏报、没给依据，还是验收项本身在本机不可验
+    const groups = new Map<string, string[]>();
+    for (const i of pendingAuto) {
+      const ev = i.evidence ?? '';
+      const cause =
+        ev === '验证没有给出这一项的结果'
+          ? '验证漏报'
+          : ev === '判为通过但没有给出依据'
+            ? '判通过但无依据'
+            : ev.startsWith('本机不可验')
+              ? '本机不可验，标为自动验证但需部署或浏览器'
+              : '验证未能完成';
+      groups.set(cause, [...(groups.get(cause) ?? []), i.id]);
+    }
+    for (const [cause, ids] of groups) hold(`${ids.length} 个验收项没有得到自动验证（${cause}）：${ids.join('、')}`);
+  }
   if (pendingManual.length) note(`${pendingManual.length} 个人工验收项留待部署后核对：${pendingManual.map((i) => i.id).join('、')}`);
   // 一条自动验证的验收项都没有：放行就等于什么都没验，交人工看一眼
   if (items.length && !reasons.some((r) => r.level === 'fail') && !items.some((i) => i.method !== 'manual')) hold('验收项全部是人工验证，没有自动验证的项');

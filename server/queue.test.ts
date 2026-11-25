@@ -146,8 +146,106 @@ describe('Queue 执行流程', () => {
     expect(t.error).toContain('实现会话无效');
     expect(t.error).toContain('没有产生任何代码改动');
     expect(t.commit).toBeUndefined();
-    expect(ctx.calls).toEqual(['preflight', 'implement']);
+    // 第一次没调用工具会自动重试一次，重试仍然没干活才判异常
+    expect(ctx.calls).toEqual(['preflight', 'implement', 'implement']);
     expect(ctx.done).toEqual([]);
+  }, 40_000);
+
+  it('实现会话没调用任何工具：带着重试说明用同一份规格重试一次，重试干了活就照常验证', async () => {
+    const prompts: string[] = [];
+    const ctx = await setup({
+      implement: (req) => {
+        prompts.push(req.prompt);
+        if (prompts.length === 1) return { ok: true, text: '消息里没有具体任务，请重发', evidence: evidence('implement', 0) };
+        edit(req.cwd, 'src/a.ts', 'export const a = 2;\n');
+        return { ok: true, text: '改好了', evidence: evidence('implement', 4) };
+      },
+      verify: report([
+        ['AC1', 'pass', 'tsc 退出码 0'],
+        ['AC2', 'unverified', '需要浏览器'],
+      ]),
+    });
+    const id = ctx.addTodo();
+    ctx.queue.start(ctx.project.id);
+    const t = await ctx.settled(id);
+
+    expect(ctx.calls).toEqual(['preflight', 'implement', 'implement', 'verify']);
+    expect(prompts[0]).not.toContain('【重试说明】');
+    expect(prompts[1].startsWith('【重试说明】')).toBe(true);
+    expect(prompts[1]).toContain('恢复默认按钮超出边框');
+    expect(t.evidence?.implement?.toolCalls).toBe(4);
+    expect(t.status).not.toBe('blocked');
+  }, 40_000);
+
+  it('实现会话读了代码却没改文件就结束：接续同一会话让它接着改，改完照常验证', async () => {
+    const reqs: AgentRequest[] = [];
+    const ctx = await setup({
+      implement: (req) => {
+        reqs.push(req);
+        if (reqs.length === 1) return { ok: true, text: '根因已确认，下一步在 a.ts 里改', evidence: { ...evidence('implement', 5), sessionId: 's-1' } };
+        edit(req.cwd, 'src/a.ts', 'export const a = 2;\n');
+        return { ok: true, text: '改好了', evidence: { ...evidence('implement', 2), sessionId: 's-1' } };
+      },
+      verify: report([
+        ['AC1', 'pass', 'tsc 退出码 0'],
+        ['AC2', 'unverified', '需要浏览器'],
+      ]),
+    });
+    const id = ctx.addTodo();
+    ctx.queue.start(ctx.project.id);
+    const t = await ctx.settled(id);
+
+    expect(ctx.calls).toEqual(['preflight', 'implement', 'implement', 'verify']);
+    expect(reqs[0].resume).toBeUndefined();
+    expect(reqs[1].resume).toBe('s-1');
+    expect(reqs[1].prompt).toContain('还没有修改任何文件');
+    expect(t.status).not.toBe('blocked');
+  }, 40_000);
+
+  it('实现会话读了代码、没改文件，接续后仍没改：只接续一次，交由门禁判定', async () => {
+    const ctx = await setup({
+      implement: () => ({ ok: true, text: '这个任务不需要改代码', evidence: { ...evidence('implement', 3), sessionId: 's-2' } }),
+    });
+    const id = ctx.addTodo();
+    ctx.queue.start(ctx.project.id);
+    const t = await ctx.settled(id);
+
+    expect(ctx.calls).toEqual(['preflight', 'implement', 'implement']);
+    expect(t.status).toBe('blocked');
+    expect(t.error).toContain('没有产生任何代码改动');
+  }, 40_000);
+
+  it('接续那轮没调用工具就回答：保留第一次的记录，按「没有改动」判定而不是「没有调用工具」', async () => {
+    const reqs: AgentRequest[] = [];
+    const ctx = await setup({
+      implement: (req) => {
+        reqs.push(req);
+        if (reqs.length === 1) return { ok: true, text: '下一步在 a.ts 里改', evidence: { ...evidence('implement', 4), sessionId: 's-3' } };
+        return { ok: true, text: '确认不需要改代码', evidence: { ...evidence('implement', 0), sessionId: 's-3' } };
+      },
+    });
+    const id = ctx.addTodo();
+    ctx.queue.start(ctx.project.id);
+    const t = await ctx.settled(id);
+
+    expect(ctx.calls).toEqual(['preflight', 'implement', 'implement']);
+    expect(reqs[1].resume).toBe('s-3');
+    expect(reqs[1].prompt).toContain('还没有修改任何文件');
+    expect(t.evidence?.implement?.toolCalls).toBe(4);
+    expect(t.status).toBe('blocked');
+    expect(t.error).toContain('没有产生任何代码改动');
+  }, 40_000);
+
+  it('没有会话号时不接续', async () => {
+    const ctx = await setup({
+      implement: () => ({ ok: true, text: '下一步在 a.ts 里改', evidence: evidence('implement', 3) }),
+    });
+    const id = ctx.addTodo();
+    ctx.queue.start(ctx.project.id);
+    const t = await ctx.settled(id);
+
+    expect(ctx.calls).toEqual(['preflight', 'implement']);
+    expect(t.status).toBe('blocked');
   }, 40_000);
 
   it('有验收项没得到自动验证、改动超出范围：进入待验收并列出要人工确认的事项', async () => {

@@ -5,11 +5,11 @@ import { EventEmitter } from 'node:events';
 import { evidenceLine, runAgent, type AgentRequest, type AgentResult } from './agent.ts';
 import type { AttachmentCache, LocalAttachment } from './attachments.ts';
 import { followUpPrompt, notesSection } from './followup.ts';
-import { evaluateGate, FALLBACK_CRITERIA, gateError, manualChecksText, normalizeReport, sessionProblem, VERIFY_SCHEMA, type GateInput } from './gate.ts';
+import { evaluateGate, FALLBACK_CRITERIA, gateError, manualChecksText, normalizeReport, sessionProblem, shouldRetryNoAction, VERIFY_SCHEMA, type GateInput } from './gate.ts';
 import { commitMessage, commitTaskChanges, git, skippedDiff, snapshot, taskChanges, taskDiff, type GitSnapshot, type TaskChanges } from './git.ts';
 import { ensureMemoryDir } from './memory.ts';
 import { runPreflight } from './preflight.ts';
-import { analysisPrompt, historySection, implementPrompt, memorySection, relatedHistory, scratchSection, skillSection, verifyPrompt, verifySection } from './prompts.ts';
+import { analysisPrompt, CONTINUE_NOTE, historySection, implementPrompt, memorySection, NO_ACTION_RETRY_NOTE, relatedHistory, scratchSection, skillSection, verifyPrompt, verifySection } from './prompts.ts';
 import { openQuestions } from './shared.ts';
 import { runShell } from './shell.ts';
 import { splitSkills, stageSkills } from './skills.ts';
@@ -414,8 +414,42 @@ export class Queue extends EventEmitter {
         ? await this.run({ ...fresh(), resume, prompt: followUpPrompt(this.store.get(id)!, notes.slice(-1), { resumed: true, extra: exec.extraPrompt }) + scratchSection(scratch) })
         : await this.run(fresh());
       if (resume && !impl.ok && impl.evidence.toolCalls === 0 && !signal.aborted) {
+        cost += impl.evidence.costUsd ?? 0;
         log('无法接续上一轮的会话，改为新开会话继续');
         impl = await this.run(fresh());
+      }
+      // 模型曾因上下文里的截断标记误判「任务缺失」，一个工具都不调用就结束。用同一份规格自动重试一次。
+      // 追加指令的一轮不重试：指令可能只是提问或「不用改了」，不调工具直接回答是正常结果
+      let retried = false;
+      if (!follow && shouldRetryNoAction(impl) && !signal.aborted) {
+        retried = true;
+        cost += impl.evidence.costUsd ?? 0;
+        log('实现会话没有调用任何工具就结束了（可能误判任务缺失），去掉历史/记忆/skill 段落，用精简提示词自动重试一次');
+        const req = fresh();
+        // 重试要改变条件而不是原样重跑：历史任务、项目记忆、skill 段落是最可能淹没任务正文的部分。
+        // 精简后只保留任务、规格、附件、测试环境与验证命令白名单；原样重试在这批任务上全部失败过
+        const slim = implementPrompt(this.store.get(id)!, exec.extraPrompt, defaultEnv(project), files, verifyHint + notesSection(notes));
+        impl = await this.run({ ...req, prompt: NO_ACTION_RETRY_NOTE + slim });
+        if (shouldRetryNoAction(impl)) log('重试后仍没有调用任何工具：模型没有识别出任务，交由门禁判定');
+      }
+      // 模型读完代码、汇报了「下一步」就结束，一个文件都没改：接续同一会话让它接着做（只有 Claude Code 能接续）。
+      // 接续而不是新开：它已经读过的代码和定好的方案都还在，不用从头再来
+      // 自动重试过的不再接续：否则最坏要跑三个完整会话
+      if (!follow && !retried && impl.ok && !signal.aborted && snap && exec.provider === 'claude' && impl.evidence.sessionId && (impl.evidence.toolCalls ?? 0) > 0) {
+        const pending = await taskChanges(snap).catch(() => null);
+        if (pending && pending.files.length === 0 && pending.skipped.length === 0) {
+          log('实现会话读了代码但没有改动任何文件就结束了（可能只汇报了进展），接续同一会话让它接着改');
+          const next = await this.run({ ...fresh(), resume: impl.evidence.sessionId, prompt: CONTINUE_NOTE });
+          // 只在接续那轮真的调用了工具时采用它：只回一句话就结束的，采用后门禁会误报「没有调用任何工具」，
+          // 而第一次其实读过代码。保留哪次的结果，哪次的花费就留给后面统一计入；另一次在这里计入，避免重复或漏算
+          if ((next.evidence.toolCalls ?? 0) > 0) {
+            cost += impl.evidence.costUsd ?? 0;
+            impl = next;
+          } else {
+            cost += next.evidence.costUsd ?? 0;
+            log(next.ok ? '接续会话没有调用任何工具就结束了，按第一次的结果交由门禁判定' : '无法接续实现会话，按第一次的结果交由门禁判定');
+          }
+        }
       }
       this.saveEvidence(id, 'implement', impl.evidence);
       cost += impl.evidence.costUsd ?? 0;
@@ -510,8 +544,11 @@ export class Queue extends EventEmitter {
       }
       // 需要人工验收时也提交（只提交到本地）：否则这些改动会被队列里的下一个任务当成执行前已有的改动
       const commitError = snap && implChanges && exec.autoCommit ? await this.commit(id, snap, implChanges.files, log) : undefined;
-      // 没有提交成功（或没开自动提交）时，这些文件仍留在工作区
-      const left = this.store.get(id)?.commit ? undefined : changed;
+      // 没有提交成功（或没开自动提交）时，这些文件仍留在工作区；
+      // 执行前已有改动、本任务又改过的文件一律不自动提交，同样留在工作区，会让后续改到它们的任务全部转人工
+      const uncommitted = this.store.get(id)?.commit ? [] : changed ?? [];
+      const leftAll = [...new Set([...uncommitted, ...(implChanges?.skipped ?? [])])];
+      const left = leftAll.length ? leftAll : undefined;
       if (gate.verdict === 'unverified' && !exec.skipReview) {
         this.store.setStatus(id, 'review', { error: commitError, manualChecks: manualChecksText(gate) || '详见门禁结论', leftover: left });
       } else {

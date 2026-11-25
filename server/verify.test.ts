@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { analysisPrompt, changesSection, implementPrompt, verifyPrompt } from './prompts.ts';
+import { analysisPrompt, changesSection, implementPrompt, NO_ACTION_RETRY_NOTE, taskRecap, verifyPrompt } from './prompts.ts';
+import { shouldRetryNoAction } from './gate.ts';
 import type { Criterion, Task } from './types.ts';
 
 const task = { id: 't', projectId: 'p', title: '修复标题', description: '', analysis: '## 目标\n标题与柱子一致', logs: [] } as unknown as Task;
@@ -43,6 +44,42 @@ describe('implementPrompt', () => {
     expect(implementPrompt({ ...task, spec } as Task, '')).toContain('只改规格「改动范围」内的文件');
     expect(implementPrompt(task, '')).not.toContain('改动范围」内');
     expect(implementPrompt({ ...task, spec: { ...spec, scope: [] } } as Task, '')).not.toContain('改动范围」内');
+  });
+
+  it('开头声明任务就在本条消息里，截断标记与任务无关', () => {
+    const p = implementPrompt(task, '');
+    const head = p.slice(0, p.indexOf('## 任务'));
+    expect(head).toContain('omitted');
+    expect(head).toContain('不要据此认为任务缺失');
+  });
+
+  it('结尾复述任务标题和规格摘要', () => {
+    const p = implementPrompt(task, '附加要求');
+    const tail = p.slice(p.lastIndexOf('## 再次确认本次任务'));
+    expect(tail).toContain('任务标题：修复标题');
+    expect(tail).toContain('标题与柱子一致');
+    expect(p.indexOf('- 附加要求')).toBeLessThan(p.lastIndexOf('## 再次确认本次任务'));
+  });
+
+  it('规格过长时摘要截短，并指回上文的完整规格', () => {
+    const recap = taskRecap({ title: 't', analysis: 'x'.repeat(2000) });
+    expect(recap).toContain('完整规格见上文');
+    expect(recap.length).toBeLessThan(800);
+    expect(taskRecap({ title: 't', analysis: '' })).not.toContain('规格摘要');
+  });
+});
+
+describe('shouldRetryNoAction', () => {
+  it('只在会话成功但一个工具都没调用时重试', () => {
+    expect(shouldRetryNoAction({ ok: true, evidence: { toolCalls: 0 } })).toBe(true);
+    expect(shouldRetryNoAction({ ok: true, evidence: { toolCalls: 3 } })).toBe(false);
+    expect(shouldRetryNoAction({ ok: false, evidence: { toolCalls: 0 } })).toBe(false);
+    expect(shouldRetryNoAction({ ok: true, evidence: { toolCalls: null } })).toBe(false);
+  });
+
+  it('重试提示词说明上次误判了任务缺失', () => {
+    expect(NO_ACTION_RETRY_NOTE).toContain('没有调用任何工具');
+    expect(NO_ACTION_RETRY_NOTE).toContain('任务就在本条消息里');
   });
 });
 
