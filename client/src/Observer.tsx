@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, type FlowMetrics, type Observation, type ObserverStatus, type Project, type Proposal } from './api.ts';
+import type { BatchFixPlan } from '../../server/observe-types.ts';
 import { FlowHealth } from './FlowHealth.tsx';
 import { Crumb, DEFAULT_FILTERS, IssueDetail, IssueForm, IssueList, ScreenshotDiagnose, issueHref, type IssueFilters } from './IssueCatalog.tsx';
 import { Proposals } from './Proposals.tsx';
@@ -120,6 +121,7 @@ export function Observer({ observations, proposals, status, flow, projects, curr
               {status!.probing && <span className="pill purple">复验中</span>}
             </span>
           )}
+          {tab === 'issues' && <FixAll status={status} />}
           {tab === 'issues' && <ScreenshotDiagnose />}
           <a className="oi-btn oi-primary" href={`${OBSERVER_HASH}/issues/new`}><span className="oi-plus" aria-hidden="true">+</span>新建问题</a>
         </div>
@@ -197,3 +199,94 @@ export function Observer({ observations, proposals, status, flow, projects, curr
     </div>
   );
 }
+
+/** 页头一键修复：把下面未处理的问题逐条依次处理完，进度、需要人工的与没修好的原因显示在按钮旁 */
+function FixAll({ status }: { status: ObserverStatus | null }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ text: string; error?: boolean } | null>(null);
+  const b = status?.batchFix ?? null;
+  const running = !!b && b.endedAt === null;
+  const call = async (path: string) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api(path, 'POST');
+    } catch (e) {
+      setMsg({ text: (e as Error).message, error: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+  // 开始前先确认：要处理几条、怎么处理、最长多久
+  const start = async () => {
+    setBusy(true);
+    setMsg(null);
+    let plan: BatchFixPlan;
+    try {
+      plan = await api<BatchFixPlan>('/api/observations-fix-plan');
+    } catch (e) {
+      setMsg({ text: (e as Error).message, error: true });
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
+    const work = plan.diagnose + plan.rerun + plan.recheck;
+    if (!work && !plan.manual) {
+      setMsg({ text: '没有待处理的问题' });
+      return;
+    }
+    const lines = [
+      `将逐条处理 ${work} 条待处理问题：`,
+      plan.diagnose ? `· 诊断并自动应用修改：${plan.diagnose} 条（会消耗模型额度）` : '',
+      plan.rerun ? `· 重新执行关联任务：${plan.rerun} 条（会消耗模型额度）` : '',
+      plan.recheck ? `· 重新生成规格复查环境：${plan.recheck} 条（同一故障第一条仍失败，后面的直接跳过）` : '',
+      plan.manual ? `· 需要人工处理、不会自动改：${plan.manual} 条（结束后列出原因）` : '',
+      work ? `最长约 ${fmtMinutes(plan.maxMinutes)}，实际通常短得多。中途可以点「停止修复」。` : '',
+      '只有确实修好（有证据）的才会标为已解决；流程类问题改完先标「待复核」。',
+    ].filter(Boolean);
+    if (!window.confirm(lines.join('\n'))) return;
+    await call('/api/observations/fix-all');
+  };
+  let summary: string | null = null;
+  if (running) {
+    summary = b.waiting
+      ? `等待中：有任务或诊断正在进行，结束后接着修（已完成 ${b.finished} / 共 ${b.total} 条）`
+      : `正在逐条修复：第 ${Math.min(b.finished + 1, b.total)} / 共 ${b.total} 条`;
+    if (b.stopped) summary += '（已停止，这一条收尾后结束）';
+  } else if (b) {
+    const parts = [`修好 ${b.fixed} 条`];
+    if (b.reviewing) parts.push(`待复核 ${b.reviewing} 条`);
+    parts.push(`没修好 ${b.failed.length} 条`);
+    if (b.manual?.length) parts.push(`需要人工 ${b.manual.length} 条`);
+    summary = `一键修复${b.stopped ? '已停止' : '已完成'}：共 ${b.total} 条，${parts.join('，')}`;
+  }
+  return (
+    <span className="oi-fixall">
+      {running ? (
+        <button className="oi-btn" disabled={busy || b.stopped} onClick={() => void call('/api/observations/fix-all/stop')}>
+          {b.stopped ? '正在停止…' : '停止修复'}
+        </button>
+      ) : (
+        <button className="oi-btn" disabled={busy || !status?.enabled} title={status?.enabled ? '把下面未处理的问题逐条依次处理' : '观察者未开启'} onClick={() => void start()}>
+          {busy ? '处理中…' : '一键修复'}
+        </button>
+      )}
+      {summary && <small className="oi-muted" role="status">{summary}</small>}
+      {!running && b && b.failed.length > 0 && (
+        <details className="oi-fixall-failed">
+          <summary>查看没修好的原因</summary>
+          <ul>{b.failed.map((x) => <li key={x.id}>{x.reason}</li>)}</ul>
+        </details>
+      )}
+      {b && !!b.manual?.length && (
+        <details className="oi-fixall-failed">
+          <summary>查看需要人工处理的</summary>
+          <ul>{b.manual.map((x) => <li key={x.id}>{x.reason}</li>)}</ul>
+        </details>
+      )}
+      {msg && <small className={msg.error ? 'error' : 'oi-ok'} role="status">{msg.text}</small>}
+    </span>
+  );
+}
+
+const fmtMinutes = (m: number) => (m >= 60 ? `${Math.floor(m / 60)} 小时${m % 60 ? ` ${m % 60} 分钟` : ''}` : `${m} 分钟`);

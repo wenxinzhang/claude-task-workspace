@@ -167,8 +167,22 @@ export class Optimizer {
     return { started: true };
   }
 
+  /** 一键修复：只诊断这一条问题，产出的提案直接发起应用（使用者已在页面上明确要求，不走自动应用白名单） */
+  runForObservation(observationId: string): { started: boolean; reason?: string } {
+    const s = this.deps.getSettings().observer ?? DEFAULT_OBSERVER_SETTINGS;
+    if (!s.enabled) return { started: false, reason: '观察者未开启' };
+    if (this.diagnosing) return { started: false, reason: '正在诊断中' };
+    if (this.deps.getApplying?.()) return { started: false, reason: '有提案正在应用' };
+    if (!this.deps.isIdle()) return { started: false, reason: '队列不空闲，请稍后再试' };
+    const o = this.deps.observations.get(observationId);
+    if (!o) return { started: false, reason: '问题不存在' };
+    if (!isActionable(o)) return { started: false, reason: '只有未处理的工具问题可以一键修复' };
+    void this.diagnose(s, false, o.id).catch(() => {});
+    return { started: true };
+  }
+
   /** auto=true 仅限自动诊断路径：产出的低风险提示词提案可自动应用；手动诊断始终等人确认 */
-  private async diagnose(s: ObserverSettings, auto = false): Promise<void> {
+  private async diagnose(s: ObserverSettings, auto = false, focusId?: string): Promise<void> {
     this.diagnosing = true;
     try {
       this.deps.onStateChange?.();
@@ -183,7 +197,10 @@ export class Optimizer {
       // 中性 cwd：绕开工具目录自带 .claude 的 hooks 与 CLAUDE.md 自动加载
       cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-optimize-'));
       // 环境与目标项目的问题不交给审查：它们不是改工具代码能解决的
-      const unresolved = this.deps.observations.list({ status: 'new' }).filter(isActionable);
+      // 一键修复只看指定的这一条：前置条件已由 runForObservation 检查
+      const unresolved = focusId !== undefined
+        ? this.deps.observations.list().filter((o) => o.id === focusId)
+        : this.deps.observations.list({ status: 'new' }).filter(isActionable);
       const history = proposalHistorySection(this.deps.proposals.list(), this.deps.observations.list(), 10, this.deps.proposals.listRemoved());
       const res = await run({
         cwd,
@@ -191,14 +208,15 @@ export class Optimizer {
         stage: 'analysis',
         access: 'read',
         schema: PROPOSAL_SCHEMA,
-        prompt: optimizePrompt(unresolved, history, { typecheckCmd: 'npm run typecheck', testCmd: 'npm test', flow: this.deps.getFlow?.() }),
+        prompt: optimizePrompt(unresolved, history, { typecheckCmd: 'npm run typecheck', testCmd: 'npm test', flow: focusId !== undefined ? undefined : this.deps.getFlow?.() }),
         timeoutMs: 10 * 60_000,
         addDirs: [path.join(this.deps.toolRoot, 'server'), path.join(this.deps.toolRoot, 'client')],
       });
       outcome.costUsd = res.evidence?.costUsd;
       if (res.ok) {
         // 流程发现先入台账，提案才能引用它们
-        const findingIds = normalizeFindings(res.structured).map(
+        // 一键修复不收流程发现：提案只能指向这一条问题
+        const findingIds = (focusId !== undefined ? [] : normalizeFindings(res.structured)).map(
           (f) =>
             this.deps.observations.add({
               projectId: '',
@@ -223,7 +241,9 @@ export class Optimizer {
           const rec = this.deps.proposals.add(d);
           // 诊断会话最长 10 分钟：判定重取当前设置，期间关掉开关就不再自动应用
           const current = this.deps.getSettings().observer ?? DEFAULT_OBSERVER_SETTINGS;
-          if (auto && !autoApplied && canAutoApplyProposal(d, current, this.deps.isIdle(), this.deps.getApplying?.() ?? null)) {
+          // 一键修复：使用者已明确要求直接应用，不受自动应用白名单限制；空闲与单飞仍由 startApply 把关
+          const direct = focusId !== undefined;
+          if (!autoApplied && (direct || (auto && canAutoApplyProposal(d, current, this.deps.isIdle(), this.deps.getApplying?.() ?? null)))) {
             if (this.deps.onAutoApply?.(rec.id)) {
               autoApplied = true;
               this.deps.proposals.markAuto(rec.id);

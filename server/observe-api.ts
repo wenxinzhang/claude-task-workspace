@@ -1,6 +1,6 @@
 import type { Express, Request, Response } from 'express';
 import type { Observer } from './observer.ts';
-import { canAbandon, effectiveAttribution, type Observation, type ObservationAttribution, type ObservationStatus } from './observe-types.ts';
+import { canAbandon, effectiveAttribution, fixRoute, type Observation, type ObservationAttribution, type ObservationStatus } from './observe-types.ts';
 import { cleanSections, observationIssueDraft, observationReview, ISSUE_BODY_LIMIT, ISSUE_TITLE_LIMIT, OBSERVATION_TEXT_LIMIT } from './observation-review.ts';
 import { publishObservationIssue, type PublishObservationIssue } from './observation-issue.ts';
 
@@ -22,7 +22,9 @@ function wrap(fn: (req: Request) => unknown | Promise<unknown>) {
   };
 }
 
+// 待复核只由提案应用设置，不接受手动设：手动设的没有静默期起点，永远走不出来
 const OBSERVATION_STATUSES: ObservationStatus[] = ['new', 'resolved', 'ignored'];
+
 
 interface IssueOptions {
   resolveRepository: (observation: Observation) => Promise<string>;
@@ -166,6 +168,35 @@ export function registerObserverRoutes(app: Express, observer: Observer, issueOp
   app.post('/api/optimize/run', wrap(async () => {
     const r = await observer.optimizer.runManual();
     if (!r.started) throw new Error(r.reason ?? '无法启动诊断');
+    return r;
+  }));
+  // 一键修复：按归属分流。工具问题只诊断这一条并直接应用提案；目标项目问题重新执行关联任务；环境问题改代码修不了
+  app.post('/api/observations/:id/fix', wrap((req) => {
+    const o = get(req.params.id);
+    if (o.status !== 'new') throw new Error('只有未处理的问题可以一键修复');
+    const route = fixRoute(o);
+    if (!route) throw new Error('备注级记录不进入修复');
+    if (route.mode === 'manual') throw new Error(route.reason);
+    if (route.mode === 'diagnose') {
+      const r = observer.optimizer.runForObservation(o.id);
+      if (!r.started) throw new Error(r.reason ?? '无法启动修复');
+      return { mode: 'diagnose' };
+    }
+    const r = observer.fixOne(o.id);
+    if (!r.ok) throw new Error(r.reason ?? '无法开始');
+    return { mode: route.mode, resolved: !!r.resolved };
+  }));
+  // 一键修复开始前的确认信息
+  app.get('/api/observations-fix-plan', wrap(() => observer.planBatchFix()));
+  // 页头一键修复：未处理的可修问题逐条依次修；停止只是不再开始下一条
+  app.post('/api/observations/fix-all', wrap(() => {
+    const r = observer.startBatchFix();
+    if (!r.ok) throw new Error(r.reason ?? '无法开始一键修复');
+    return r;
+  }));
+  app.post('/api/observations/fix-all/stop', wrap(() => {
+    const r = observer.stopBatchFix();
+    if (!r.ok) throw new Error(r.reason ?? '无法停止');
     return r;
   }));
   app.post('/api/proposals/:id/apply', wrap((req) => {

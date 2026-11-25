@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { isActionable, type Observation, type ObservationIssue, type ObservationKind, type ObservationReview, type ObservationSections, type ObservationStatus } from './observe-types.ts';
+import { isActionable, needsReview, type Observation, type ObservationIssue, type ObservationKind, type ObservationReview, type ObservationSections, type ObservationStatus } from './observe-types.ts';
 
 const MAX_RECORDS = 500;
 /** 带 key 的问题标为已解决后的静默期 */
@@ -122,10 +122,26 @@ export class ObservationStore extends EventEmitter {
   add(input: Omit<Observation, 'id' | 'at' | 'status'>, now = Date.now()): Observation {
     // 带 key 的问题：未处理或已忽略的同 key 记录还在就不重复入库。
     // 刚解决的也不立刻重新入库：流程类问题按历史累计事实判定，改动生效需要新的任务跑过，静默期后仍成立才算复发
+    // 待复核的和刚解决的一样看待：静默期内不重复入库
+    const settled = (r: Observation) => r.status === 'resolved' || r.status === 'reviewing';
     const dup = input.key
-      ? this.records.find((r) => r.key === input.key && (r.status !== 'resolved' || (r.resolvedAt !== undefined && now - r.resolvedAt < RESOLVED_QUIET_MS)))
+      ? this.records.find((r) => r.key === input.key && (!settled(r) || (r.resolvedAt !== undefined && now - r.resolvedAt < RESOLVED_QUIET_MS)))
       : undefined;
     if (dup) return structuredClone(dup);
+    // 待复核的问题静默期后仍成立：修改没起作用，原记录退回待处理，不另起一条
+    const recurred = input.key ? this.records.find((r) => r.key === input.key && r.status === 'reviewing') : undefined;
+    if (recurred) {
+      recurred.title = input.title;
+      recurred.detail = input.detail;
+      recurred.context = input.context;
+      recurred.status = 'new';
+      recurred.resolvedAt = undefined;
+      recurred.proposalId = undefined;
+      recurred.updatedAt = now;
+      this.scheduleSave();
+      this.emit('change');
+      return structuredClone(recurred);
+    }
     const rec: Observation = { ...input, id: randomUUID(), at: now, status: 'new', number: this.nextNumber(), updatedAt: now };
     this.records.push(rec);
     while (this.records.length > MAX_RECORDS) {
@@ -143,7 +159,8 @@ export class ObservationStore extends EventEmitter {
     const rec = this.records.find((r) => r.id === id);
     if (!rec) return undefined;
     rec.status = status;
-    rec.resolvedAt = status === 'resolved' ? now : undefined;
+    // 待复核也记时间：静默期从修改应用时算起
+    rec.resolvedAt = status === 'resolved' || status === 'reviewing' ? now : undefined;
     rec.updatedAt = now;
     this.scheduleSave();
     this.emit('change');
@@ -156,7 +173,8 @@ export class ObservationStore extends EventEmitter {
     let changed = false;
     for (const rec of this.records) {
       if (ids.has(rec.id) && rec.status === 'new') {
-        rec.status = 'resolved';
+        // 统计类问题改完当下证明不了有效：先待复核
+        rec.status = needsReview(rec) ? 'reviewing' : 'resolved';
         rec.resolvedAt = Date.now();
         rec.proposalId = proposalId;
         changed = true;
@@ -172,7 +190,7 @@ export class ObservationStore extends EventEmitter {
   reopenByProposal(proposalId: string): void {
     let changed = false;
     for (const rec of this.records) {
-      if (rec.proposalId === proposalId && rec.status === 'resolved') {
+      if (rec.proposalId === proposalId && (rec.status === 'resolved' || rec.status === 'reviewing')) {
         rec.status = 'new';
         rec.proposalId = undefined;
         changed = true;
@@ -197,10 +215,32 @@ export class ObservationStore extends EventEmitter {
         this.submitting.has(r.id) ||
         r.status === 'new' ||
         (r.status === 'ignored' && !!r.key) ||
+        r.status === 'reviewing' ||
         (r.status === 'resolved' && !!r.key && r.resolvedAt !== undefined && now - r.resolvedAt < RESOLVED_QUIET_MS) ||
         (!!r.proposalId && keepProposalIds.has(r.proposalId)),
     );
     const n = before - this.records.length;
+    if (n) {
+      this.scheduleSave();
+      this.emit('change');
+    }
+    return n;
+  }
+
+  /**
+   * 待复核的出口：修改应用后过了两个静默期都没复发，算修改起效，转为已解决。
+   * 采集器只在问题仍成立时才会再报，不再报就只能靠时间来确认
+   */
+  settleReviews(now = Date.now()): number {
+    let n = 0;
+    for (const rec of this.records) {
+      if (rec.status === 'reviewing' && rec.resolvedAt !== undefined && now - rec.resolvedAt >= 2 * RESOLVED_QUIET_MS) {
+        rec.status = 'resolved';
+        rec.resolvedAt = now;
+        rec.updatedAt = now;
+        n++;
+      }
+    }
     if (n) {
       this.scheduleSave();
       this.emit('change');

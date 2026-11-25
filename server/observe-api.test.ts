@@ -8,7 +8,7 @@ import type { AgentRequest, AgentResult } from './agent.ts';
 import { registerObserverRoutes } from './observe-api.ts';
 import { applyProposal, backupFiles, resultPath, runningPath } from './apply-proposal.ts';
 import { compareProbe, createObserver } from './observer.ts';
-import { DEFAULT_OBSERVER_SETTINGS, isActionable, type Proposal } from './observe-types.ts';
+import { DEFAULT_OBSERVER_SETTINGS, fixRoute, isActionable, type Proposal } from './observe-types.ts';
 import { Queue } from './queue.ts';
 import { Store } from './store.ts';
 import type { GateResult, ItemResult, RunEvidence } from './types.ts';
@@ -54,10 +54,16 @@ afterEach(async () => {
 
 function obsSetup(opts: { deployRunning?: boolean; enabled?: boolean; implementDelay?: number; usageCollect?: boolean } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-observer-'));
-  cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
   const workdir = path.join(root, 'work');
   fs.mkdirSync(workdir, { recursive: true });
   const store = new Store(path.join(root, 'data'));
+  cleanups.push(() => {
+    // 先取消任务的延迟写盘：否则目录删掉后定时器才触发，报 ENOENT 的未处理错误
+    const s = store as unknown as { saveTimer: ReturnType<typeof setTimeout> | null };
+    if (s.saveTimer) clearTimeout(s.saveTimer);
+    s.saveTimer = null;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
   const project = store.createProject({ name: 'p', workdir, exec: { useKnowledge: false } });
   const fakeRun = async (req: AgentRequest): Promise<AgentResult> => {
     if (req.stage === 'preflight') {
@@ -584,5 +590,254 @@ describe('usage 路由', () => {
     expect(await (await post(`${ctx.base}/api/usage/collect`)).json()).toEqual({ added: 0 });
     expect(await (await post(`${ctx.base}/api/usage/clear`)).json()).toEqual({ cleared: 9 });
     expect((await (await fetch(`${ctx.base}/api/usage/metrics`)).json()).eventCount).toBe(0);
+  });
+});
+
+describe('一键修复路由', () => {
+  it('环境问题拒绝并说明原因；目标项目问题没有关联任务拒绝', async () => {
+    const ctx = apiSetup();
+    const env = ctx.observer.observations.add({ projectId: ctx.project.id, kind: 'git_sync', severity: 'error', title: '同步失败', detail: 'Could not resolve host: github.com', context: {}, source: 'code' });
+    const r1 = await post(`${ctx.base}/api/observations/${env.id}/fix`);
+    expect(r1.status).toBe(400);
+    expect((await r1.json()).error).toContain('环境问题');
+    const proj = ctx.observer.observations.add({ projectId: ctx.project.id, kind: 'manual', severity: 'warn', title: '项目问题', detail: '', context: {}, source: 'code', attribution: 'project' });
+    const r2 = await post(`${ctx.base}/api/observations/${proj.id}/fix`);
+    expect(r2.status).toBe(400);
+    expect((await r2.json()).error).toBe('该问题没有关联任务，无法重新执行');
+  });
+
+  it('目标项目问题：关联任务从异常放回待修改并单独执行一次', async () => {
+    const ctx = apiSetup();
+    const t = ctx.store.create({ projectId: ctx.project.id, title: '任务', description: '', source: 'manual' });
+    ctx.store.setStatus(t.id, 'blocked', { error: '实现失败：x' });
+    const o = ctx.observer.observations.add({ projectId: ctx.project.id, taskId: t.id, kind: 'exec_error', severity: 'error', title: '执行失败', detail: 'x', context: {}, source: 'code', attribution: 'project' });
+    const r = await post(`${ctx.base}/api/observations/${o.id}/fix`);
+    expect(await r.json()).toEqual({ mode: 'rerun', resolved: false });
+    expect(ctx.store.get(t.id)!.status).not.toBe('blocked');
+    expect(ctx.store.get(t.id)!.error).toBeUndefined();
+    await waitUntil(() => !ctx.queue.isBusy(ctx.project.id));
+  });
+
+  it('目标项目问题：runOne 抛错时任务还原为点按钮前的状态与报错（错误路径锚点）', async () => {
+    const ctx = apiSetup();
+    const t = ctx.store.create({ projectId: ctx.project.id, title: '任务', description: '', source: 'manual' });
+    ctx.store.setStatus(t.id, 'blocked', { error: '实现失败：x' });
+    const o = ctx.observer.observations.add({ projectId: ctx.project.id, taskId: t.id, kind: 'exec_error', severity: 'error', title: '执行失败', detail: 'x', context: {}, source: 'code', attribution: 'project' });
+    const spy = vi.spyOn(ctx.queue, 'runOne').mockImplementation(() => { throw new Error('该项目有任务正在执行，请等它结束或先停止当前任务'); });
+    const r = await post(`${ctx.base}/api/observations/${o.id}/fix`);
+    expect(r.status).toBe(400);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(ctx.store.get(t.id)!.status).toBe('blocked');
+    expect(ctx.store.get(t.id)!.error).toBe('实现失败：x');
+    spy.mockRestore();
+  });
+
+  it('工具问题：启动只针对这一条的诊断；已处理的问题拒绝', async () => {
+    const ctx = apiSetup();
+    const o = ctx.observer.observations.add({ projectId: '', kind: 'llm_finding', severity: 'warn', title: '工具问题', detail: 'd', context: {}, source: 'llm' });
+    expect(await (await post(`${ctx.base}/api/observations/${o.id}/fix`)).json()).toEqual({ mode: 'diagnose' });
+    await waitUntil(() => !ctx.observer.optimizer.isDiagnosing());
+    ctx.observer.observations.setStatus(o.id, 'ignored');
+    const r = await post(`${ctx.base}/api/observations/${o.id}/fix`);
+    expect((await r.json()).error).toBe('只有未处理的问题可以一键修复');
+  });
+});
+
+describe('页头一键修复（逐条依次）', () => {
+  const tool = (title: string) => ({ projectId: '', kind: 'llm_finding' as const, severity: 'warn' as const, title, detail: 'd', context: {}, source: 'llm' as const });
+
+  it('只收可修的问题，逐条诊断直到全部有结果；环境问题、备注、已处理的不收', async () => {
+    const ctx = apiSetup();
+    const a = ctx.observer.observations.add(tool('工具问题 A'));
+    const b = ctx.observer.observations.add(tool('工具问题 B'));
+    ctx.observer.observations.add({ projectId: ctx.project.id, kind: 'git_sync', severity: 'error', title: '同步失败', detail: 'Could not resolve host: github.com', context: {}, source: 'code' });
+    ctx.observer.observations.add({ ...tool('备注'), severity: 'note' });
+    const done = ctx.observer.observations.add(tool('已处理'));
+    ctx.observer.observations.setStatus(done.id, 'resolved');
+    const run = vi.spyOn(ctx.observer.optimizer, 'runForObservation');
+    const r = await post(`${ctx.base}/api/observations/fix-all`);
+    expect(await r.json()).toEqual({ ok: true, total: 2 });
+    await waitUntil(() => ctx.observer.status().batchFix?.endedAt != null, 30_000);
+    const s = ctx.observer.status().batchFix!;
+    expect(run.mock.calls.map((c) => c[0])).toEqual([a.id, b.id]);
+    expect(s.finished).toBe(2);
+    // 假诊断不产出提案：两条都如实记为没修好，并给原因
+    expect(s.failed.map((x) => x.reason)).toEqual([`#${a.number}：诊断没有产出修改方案`, `#${b.number}：诊断没有产出修改方案`]);
+    run.mockRestore();
+  }, 40_000);
+
+  it('进行中再点拒绝；停止后正在修的这一条收尾，后面的不再开始', async () => {
+    const ctx = apiSetup();
+    for (const t of ['一', '二', '三']) ctx.observer.observations.add(tool(t));
+    // 假诊断瞬间结束，三条会在第二次点击前就修完：让第一条一直停在「诊断中」，直到测试放开
+    let holding = false;
+    const run = vi.spyOn(ctx.observer.optimizer, 'runForObservation').mockImplementation(() => {
+      holding = true;
+      return { started: true };
+    });
+    const diag = vi.spyOn(ctx.observer.optimizer, 'isDiagnosing').mockImplementation(() => holding);
+    await post(`${ctx.base}/api/observations/fix-all`);
+    const again = await post(`${ctx.base}/api/observations/fix-all`);
+    expect((await again.json()).error).toBe('一键修复正在进行');
+    expect(await (await post(`${ctx.base}/api/observations/fix-all/stop`)).json()).toEqual({ ok: true });
+    holding = false;
+    await waitUntil(() => ctx.observer.status().batchFix?.endedAt != null, 30_000);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(ctx.observer.status().batchFix!.stopped).toBe(true);
+    run.mockRestore();
+    diag.mockRestore();
+  }, 40_000);
+
+  it('没有可修的问题时拒绝并说明', async () => {
+    const ctx = apiSetup();
+    const r = await post(`${ctx.base}/api/observations/fix-all`);
+    expect(r.status).toBe(400);
+    expect((await r.json()).error).toBe('没有可以修复的问题');
+  });
+});
+
+describe('一键修复分流与证据', () => {
+  const base = { status: 'new' as const, severity: 'error' as const, source: 'code' as const, detail: 'x' };
+  it('环境问题能复查的复查、不能的列人工；没写归属但有任务的按项目重跑；重跑证明不了的列人工', () => {
+    const gw = 'API Error: 503 No available channel for model m';
+    expect(fixRoute({ ...base, kind: 'analyze_fail', detail: `生成规格失败：${gw}`, taskId: 't' })).toEqual({ mode: 'recheck' });
+    expect(fixRoute({ ...base, kind: 'git_sync', detail: 'Could not resolve host: x' })!.mode).toBe('manual');
+    expect(fixRoute({ ...base, kind: 'exec_error', taskId: 't' })).toEqual({ mode: 'rerun' });
+    expect(fixRoute({ ...base, kind: 'git_push', taskId: 't', attribution: 'project' })!.mode).toBe('manual');
+    expect(fixRoute({ ...base, kind: 'manual', attribution: 'project' })!.mode).toBe('manual');
+    expect(fixRoute({ ...base, kind: 'flow_backlog', severity: 'warn', detail: `1 个：${gw}` })!.mode).toBe('manual');
+    expect(fixRoute({ ...base, kind: 'flow_finding', source: 'llm' })).toEqual({ mode: 'diagnose' });
+    expect(fixRoute({ ...base, kind: 'flow_finding', severity: 'note' })).toBeNull();
+    expect(fixRoute({ ...base, kind: 'flow_finding', status: 'reviewing' })).toBeNull();
+  });
+
+  it('流程类问题经提案解决后待复核；静默期后仍成立，原记录退回待处理而不是另起一条', () => {
+    const ctx = obsSetup();
+    const obs = ctx.observer.observations;
+    const input = { projectId: '', kind: 'flow_finding' as const, severity: 'warn' as const, title: '流程', detail: 'd', context: {}, source: 'code' as const, key: 'flow:k' };
+    const o = obs.add(input, 1000);
+    const g = obs.add({ ...input, kind: 'gate_fail', key: undefined, taskId: 't' }, 1000);
+    obs.markResolvedByProposal('p1', [o.id, g.id]);
+    expect(obs.get(o.id)!.status).toBe('reviewing');
+    expect(obs.get(g.id)!.status).toBe('resolved');
+    // 静默期内不重复入库
+    expect(obs.add(input).id).toBe(o.id);
+    expect(obs.get(o.id)!.status).toBe('reviewing');
+    // 静默期后仍成立
+    const back = obs.add(input, Date.now() + 365 * 24 * 3600_000);
+    expect(back.id).toBe(o.id);
+    expect(obs.get(o.id)!.status).toBe('new');
+    // 回滚把待复核的一并退回
+    const o2 = obs.add({ ...input, key: 'flow:k2' });
+    obs.markResolvedByProposal('p2', [o2.id]);
+    obs.reopenByProposal('p2');
+    expect(obs.get(o2.id)!.status).toBe('new');
+  });
+
+  it('页头一键修复：需要人工的列出原因；同一环境故障第一条复查仍失败，后面的直接跳过不再重试', async () => {
+    const ctx = apiSetup();
+    const gw = '生成规格失败：API Error: 503 No available channel for model m';
+    const tasks = [1, 2].map((i) => {
+      const t = ctx.store.create({ projectId: ctx.project.id, title: `任务${i}`, description: '', source: 'manual' });
+      ctx.store.update(t.id, { error: gw });
+      return t;
+    });
+    // 写入报错时采集器已为每个任务记下一条生成规格失败
+    expect(ctx.observer.observations.list({ kind: 'analyze_fail' }).map((o) => o.taskId).sort()).toEqual(tasks.map((t) => t.id).sort());
+    const man = ctx.observer.observations.add({ projectId: ctx.project.id, kind: 'git_sync', severity: 'error', title: '同步失败', detail: 'Could not resolve host: github.com', context: {}, source: 'code' });
+    // 假复查：网关仍不通
+    const analyze = vi.spyOn(ctx.queue, 'analyze').mockImplementation((id: string) => {
+      ctx.store.update(id, { analyzing: false, error: gw });
+    });
+    expect(await (await fetch(`${ctx.base}/api/observations-fix-plan`)).json()).toMatchObject({ recheck: 2, manual: 1, diagnose: 0, rerun: 0 });
+    expect(await (await post(`${ctx.base}/api/observations/fix-all`)).json()).toEqual({ ok: true, total: 2 });
+    await waitUntil(() => ctx.observer.status().batchFix?.endedAt != null, 30_000);
+    const s = ctx.observer.status().batchFix!;
+    expect(analyze).toHaveBeenCalledTimes(1);
+    expect(s.fixed).toBe(0);
+    expect(s.failed.map((x) => x.reason)).toEqual([expect.stringContaining('重新生成规格仍失败'), expect.stringContaining('同样的故障刚复查过')]);
+    expect(s.manual!.map((x) => x.id)).toEqual([man.id]);
+    analyze.mockRestore();
+  }, 40_000);
+
+  it('页头一键修复：复查成功才标已解决', async () => {
+    const ctx = apiSetup();
+    const gw = '生成规格失败：API Error: 503 No available channel for model m';
+    const t = ctx.store.create({ projectId: ctx.project.id, title: '任务', description: '', source: 'manual' });
+    ctx.store.update(t.id, { error: gw });
+    const o = ctx.observer.observations.list({ kind: 'analyze_fail' }).find((x) => x.taskId === t.id)!;
+    expect(o).toBeDefined();
+    const analyze = vi.spyOn(ctx.queue, 'analyze').mockImplementation((id: string) => {
+      ctx.store.update(id, { analyzing: false, error: undefined, spec: { goal: 'g' } as never });
+    });
+    await post(`${ctx.base}/api/observations/fix-all`);
+    await waitUntil(() => ctx.observer.status().batchFix?.endedAt != null, 30_000);
+    expect(ctx.observer.observations.get(o.id)!.status).toBe('resolved');
+    expect(ctx.observer.status().batchFix!.fixed).toBe(1);
+    analyze.mockRestore();
+  }, 40_000);
+});
+
+describe('一键修复：审查后的补充', () => {
+  const onTask = (projectId: string, taskId: string, kind: 'exec_error' | 'gate_fail' | 'llm_finding', title: string) => ({ projectId, taskId, kind, severity: 'error' as const, title, detail: 'x', context: {}, source: kind === 'llm_finding' ? ('llm' as const) : ('code' as const) });
+
+  it('带任务、没写归属的 LLM 发现走诊断，不会因任务完成被标已解决', () => {
+    expect(fixRoute({ status: 'new', severity: 'warn', source: 'llm', kind: 'llm_finding', detail: 'd', taskId: 't' })).toEqual({ mode: 'diagnose' });
+    expect(fixRoute({ status: 'new', severity: 'warn', source: 'code', kind: 'gate_fail', detail: 'd', taskId: 't' })).toEqual({ mode: 'rerun' });
+  });
+
+  it('详情页单条重跑：跑完且门禁通过才自动标已解决', async () => {
+    const ctx = apiSetup();
+    const t = ctx.store.create({ projectId: ctx.project.id, title: '任务', description: '', source: 'manual' });
+    ctx.store.setStatus(t.id, 'blocked', { error: '门禁未通过' });
+    const o = ctx.observer.observations.add(onTask(ctx.project.id, t.id, 'gate_fail', '门禁未通过'));
+    const run = vi.spyOn(ctx.queue, 'runOne').mockImplementation((id: string) => {
+      ctx.store.setStatus(id, 'done', { gate: gate('pass') });
+    });
+    expect(await (await post(`${ctx.base}/api/observations/${o.id}/fix`)).json()).toEqual({ mode: 'rerun', resolved: false });
+    await waitUntil(() => ctx.observer.observations.get(o.id)!.status === 'resolved', 10_000);
+    run.mockRestore();
+  }, 20_000);
+
+  it('任务已完成且有证据：不再重跑，直接标已解决', async () => {
+    const ctx = apiSetup();
+    const t = ctx.store.create({ projectId: ctx.project.id, title: '任务', description: '', source: 'manual' });
+    ctx.store.setStatus(t.id, 'done', { gate: gate('pass') });
+    const o = ctx.observer.observations.add(onTask(ctx.project.id, t.id, 'gate_fail', '旧的门禁失败'));
+    const run = vi.spyOn(ctx.queue, 'runOne');
+    expect(await (await post(`${ctx.base}/api/observations/${o.id}/fix`)).json()).toEqual({ mode: 'rerun', resolved: true });
+    expect(run).not.toHaveBeenCalled();
+    expect(ctx.observer.observations.get(o.id)!.status).toBe('resolved');
+    run.mockRestore();
+  });
+
+  it('页头一键修复：同一任务的几条问题只重跑一次，都计入修好', async () => {
+    const ctx = apiSetup();
+    const t = ctx.store.create({ projectId: ctx.project.id, title: '任务', description: '', source: 'manual' });
+    ctx.store.setStatus(t.id, 'blocked', { error: '实现失败：x' });
+    ctx.observer.observations.add(onTask(ctx.project.id, t.id, 'exec_error', '执行失败'));
+    ctx.observer.observations.add(onTask(ctx.project.id, t.id, 'gate_fail', '门禁未通过'));
+    const run = vi.spyOn(ctx.queue, 'runOne').mockImplementation((id: string) => {
+      ctx.store.setStatus(id, 'done', { gate: gate('pass') });
+    });
+    await post(`${ctx.base}/api/observations/fix-all`);
+    await waitUntil(() => ctx.observer.status().batchFix?.endedAt != null, 30_000);
+    const s = ctx.observer.status().batchFix!;
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(s.failed).toEqual([]);
+    expect(s.fixed).toBe(s.total);
+    expect(s.total).toBeGreaterThanOrEqual(2);
+    run.mockRestore();
+  }, 40_000);
+
+  it('待复核两个静默期没复发转为已解决；清理时保留待复核', () => {
+    const ctx = obsSetup();
+    const obs = ctx.observer.observations;
+    const o = obs.add({ projectId: '', kind: 'flow_finding', severity: 'warn', title: '流程', detail: 'd', context: {}, source: 'code', key: 'flow:r' });
+    obs.markResolvedByProposal('p', [o.id]);
+    expect(obs.clearHandled()).toBe(0);
+    expect(obs.settleReviews(Date.now() + 1000)).toBe(0);
+    expect(obs.settleReviews(Date.now() + 49 * 3_600_000)).toBe(1);
+    expect(obs.get(o.id)!.status).toBe('resolved');
   });
 });

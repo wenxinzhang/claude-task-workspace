@@ -320,6 +320,49 @@ describe('Optimizer 自动应用（2B）', () => {
     }
   });
 
+  it('一键修复：只把指定问题交给诊断，产出提案直接发起应用（不受白名单与 autoApply 限制）', async () => {
+    const ctx = setup({ autoApply: false, autoOptimize: false });
+    try {
+      const [target, other] = ctx.observations.list();
+      // 门禁组件、非提示词文件：自动应用白名单本会拒绝，一键修复照样应用
+      ctx.setStructured({ proposals: [draft('门禁改动', 'gate', 'server/gate.ts', target.id), draft('别的问题', 'prompt', 'server/prompts.ts', other.id)] });
+      expect(ctx.optimizer.runForObservation(target.id)).toEqual({ started: true });
+      await new Promise((res) => setTimeout(res, 30));
+      expect(ctx.captured!.prompt).toContain(target.title);
+      expect(ctx.captured!.prompt).not.toContain(other.title);
+      // 引用别的问题的提案被过滤：只剩指向本问题的一条
+      expect(ctx.proposals.list().map((p) => p.title)).toEqual(['门禁改动']);
+      expect(ctx.autoAppliedIds).toEqual([ctx.proposals.list()[0].id]);
+    } finally {
+      ctx.observations.flush();
+      ctx.proposals.flush();
+      ctx.cleanup();
+    }
+  });
+
+  it('一键修复前置检查：未开启、队列忙、已处理或非工具问题都拒绝，run 零调用（否决锚点）', async () => {
+    const off = setup({ enabled: false });
+    const busy = setup({ idle: false });
+    const ctx = setup();
+    try {
+      expect(off.optimizer.runForObservation(off.observations.list()[0].id).reason).toBe('观察者未开启');
+      expect(busy.optimizer.runForObservation(busy.observations.list()[0].id).reason).toBe('队列不空闲，请稍后再试');
+      expect(ctx.optimizer.runForObservation('gone').reason).toBe('问题不存在');
+      const project = ctx.observations.add(oDraft({ title: '项目问题', attribution: 'project' }));
+      expect(ctx.optimizer.runForObservation(project.id).started).toBe(false);
+      const done = ctx.observations.list()[0];
+      ctx.observations.setStatus(done.id, 'resolved');
+      expect(ctx.optimizer.runForObservation(done.id).started).toBe(false);
+      expect(off.calls + busy.calls + ctx.calls).toBe(0);
+    } finally {
+      for (const c of [off, busy, ctx]) {
+        c.observations.flush();
+        c.proposals.flush();
+        c.cleanup();
+      }
+    }
+  });
+
   it('应用发起失败（单飞锁被占）：不标 auto，提案留在待确认', async () => {
     const ctx = setup({ autoApply: true, autoApplyResult: false });
     try {

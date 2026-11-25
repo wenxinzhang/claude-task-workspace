@@ -179,7 +179,11 @@ export function proposalHistorySection(proposals: Proposal[], observations: Obse
     // 被 cap 裁掉的条目不计入分母，只按现存计数
     const linked = p.problemIds.map((id) => byId.get(id)).filter((o): o is Observation => !!o);
     const resolved = linked.filter((o) => o.status === 'resolved').length;
-    const ratio = linked.length ? `关联问题 ${resolved}/${linked.length} 已解决` : '关联问题已不在台账';
+    // 待复核：修改已应用、还在等新任务验证，不能算成没解决
+    const reviewing = linked.filter((o) => o.status === 'reviewing').length;
+    const ratio = linked.length
+      ? `关联问题 ${resolved}/${linked.length} 已解决${reviewing ? `、${reviewing} 条待复核（修改已应用，等新任务验证）` : ''}`
+      : '关联问题已不在台账';
     return `- ${p.title}（组件：${p.component}）→ ${p.status}；${probe}；${ratio}`;
   });
   return `\n\n## 历史提案结局（最近 ${recent.length + removedLines.length} 条，供借鉴）\n${[...lines, ...removedLines].join('\n')}`;

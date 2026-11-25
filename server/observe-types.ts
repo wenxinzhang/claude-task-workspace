@@ -30,7 +30,8 @@ export const OBSERVATION_KINDS = [
 export type ObservationKind = (typeof OBSERVATION_KINDS)[number];
 
 export type ObservationSeverity = 'error' | 'warn' | 'note';
-export type ObservationStatus = 'new' | 'resolved' | 'ignored';
+/** reviewing：修改已应用，但统计类问题要等新任务跑过才知道有没有用（静默期后仍成立会重新入库） */
+export type ObservationStatus = 'new' | 'reviewing' | 'resolved' | 'ignored';
 export type ObservationSource = 'code' | 'llm';
 
 /** 问题的现场事实：能取到的都取，取不到的不填（不用 0 回填） */
@@ -147,6 +148,87 @@ export function isActionable(o: Pick<Observation, 'status' | 'severity' | 'attri
   return a !== 'environment' && a !== 'project';
 }
 
+/**
+ * 统计类问题：结论来自多个任务的累计数据。改了提示词或流程，当下证明不了有效，要等新任务跑过。
+ * 提案应用后这类问题先标「待复核」，不直接算已解决
+ */
+export const REVIEW_KINDS: ObservationKind[] = ['flow_backlog', 'flow_gate', 'flow_finding', 'usage_friction'];
+export const needsReview = (o: Pick<Observation, 'kind'>) => REVIEW_KINDS.includes(o.kind);
+
+/** 一键修复里一条问题怎么处理 */
+export type FixRoute =
+  /** 工具问题：诊断并自动应用修改 */
+  | { mode: 'diagnose' }
+  /** 目标项目问题：重新执行关联任务 */
+  | { mode: 'rerun' }
+  /** 环境问题：实际复查一次（重新生成规格），成功了才算已解决 */
+  | { mode: 'recheck' }
+  /** 改不了、也查不了：列进「需要人工处理」并写明原因 */
+  | { mode: 'manual'; reason: string };
+
+/**
+ * 一键修复的分流：页头一键修复与详情页按钮共用。只看未处理、不是备注的问题，其余返回 null（不收）。
+ * 记录里没写归属、但关联了任务的问题按目标项目处理：重跑任务就是对它最直接的验证。
+ * 这条只用于修复分流，不改 effectiveAttribution——自动诊断的输入范围保持不变
+ */
+export function fixRoute(o: Pick<Observation, 'status' | 'severity' | 'attribution' | 'detail' | 'kind' | 'source' | 'taskId'>): FixRoute | null {
+  if (o.status !== 'new' || o.severity === 'note') return null;
+  const a = effectiveAttribution(o);
+  if (a === 'environment') {
+    // 只有「生成规格失败」能低成本实际复查：重新生成一次规格，只读、不改代码
+    if (o.kind === 'analyze_fail' && o.taskId) return { mode: 'recheck' };
+    return { mode: 'manual', reason: '环境问题（网络、目录、模型网关）没有自动复查的办法：请在本机排除故障后手动标为已解决' };
+  }
+  if (a === 'project' || (!a && o.taskId && RERUN_KINDS.includes(o.kind))) {
+    if (!o.taskId) return { mode: 'manual', reason: '该问题没有关联任务，无法重新执行' };
+    // 重跑任务不会重做推送、同步、部署、导入：跑完也证明不了它好了
+    if (NO_RERUN_PROOF.includes(o.kind)) return { mode: 'manual', reason: '重新执行任务不会重做这一步，证明不了它已经好了：请在本机确认后手动标为已解决' };
+    return { mode: 'rerun' };
+  }
+  // 积压是环境故障的后果，不是工具的毛病：先处理对应的生成规格失败，积压会跟着消失
+  if (o.kind === 'flow_backlog' && ENVIRONMENT_PATTERNS.some((re) => re.test(o.detail))) {
+    return { mode: 'manual', reason: '积压是环境故障（模型网关等）造成的：先处理对应的生成规格失败，任务重新生成规格后再把这条标为已解决' };
+  }
+  return { mode: 'diagnose' };
+}
+
+const NO_RERUN_PROOF: ObservationKind[] = ['git_push', 'git_sync', 'deploy_fail', 'feishu_import'];
+/** 没写归属时按目标项目重跑的种类：都是任务执行本身的结果，重跑就是验证。LLM 发现、截图、手动问题仍走诊断 */
+const RERUN_KINDS: ObservationKind[] = ['exec_error', 'gate_fail', 'gate_unverified', 'commit_fail', 'feishu_writeback', 'preflight_fail'];
+
+/** 点一键修复之前的确认信息：各种处理方式各多少条，以及最长耗时 */
+export interface BatchFixPlan {
+  diagnose: number;
+  rerun: number;
+  recheck: number;
+  manual: number;
+  /** 最长耗时（分钟）：诊断单条上限 10 分钟、重跑单条最多等 60 分钟、复查单条最多等 20 分钟 */
+  maxMinutes: number;
+}
+
+/** 一键修复的进度：问题逐条依次修，上一条的诊断、应用或重新执行结束后才开始下一条 */
+export interface BatchFixState {
+  total: number;
+  /** 已有结果的条数（修好、待复核、没修好、没能开始都算；需要人工的不在 total 里） */
+  finished: number;
+  /** 正在修的问题 id；两条之间、全部结束后为 null */
+  current: string | null;
+  /** 修完后问题变成已解决的条数 */
+  fixed: number;
+  /** 修改已应用、但要等新任务跑过才能确认的条数（统计类问题） */
+  reviewing?: number;
+  /** 没能开始或修完仍未解决的问题与原因 */
+  failed: { id: string; reason: string }[];
+  /** 改不了、也证明不了的问题与原因：要人来处理 */
+  manual?: { id: string; reason: string }[];
+  /** 正在等别的任务或诊断结束，才能开始下一条 */
+  waiting?: boolean;
+  startedAt: number;
+  /** 全部跑完或被停止的时间；进行中为 null */
+  endedAt: number | null;
+  stopped?: boolean;
+}
+
 export const PROPOSAL_COMPONENTS = ['prompt', 'gate', 'flow', 'integration'] as const;
 export type ProposalComponent = (typeof PROPOSAL_COMPONENTS)[number];
 
@@ -258,6 +340,8 @@ export interface ObserverStatus {
   lastRunAt: number | null;
   /** 最近一次流程审查的结果；没跑过为 null */
   lastRun: OptimizeRun | null;
+  /** 页头「一键修复」的进度；本次启动后没点过为 null */
+  batchFix: BatchFixState | null;
 }
 
 /** 一次流程审查会话的结果：页面据此告诉使用者这次审查出了什么，失败时给原因 */

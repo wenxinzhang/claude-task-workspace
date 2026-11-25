@@ -1,7 +1,7 @@
 // 问题目录：列表 / 独立详情 / 新建与编辑。数据来自问题台账（/api/observations），状态与权限沿用后端规则
 import { useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { api, checkImage, fmtDateTime, uploadScreenshot, type Observation, type Project, type Proposal } from './api.ts';
-import { OBSERVATION_SECTION_KEYS, OBSERVATION_SECTION_LABEL, type ObservationSectionKey, type ObservationSections, type ObservationStatus } from '../../server/observe-types.ts';
+import { fixRoute, OBSERVATION_SECTION_KEYS, OBSERVATION_SECTION_LABEL, type ObservationSectionKey, type ObservationSections, type ObservationStatus } from '../../server/observe-types.ts';
 import { ISSUE_TITLE_LIMIT, OBSERVATION_TEXT_LIMIT, observationSections } from '../../server/observation-review.ts';
 import { ObservationDetail } from './ObservationDetail.tsx';
 
@@ -27,8 +27,8 @@ export const KIND_LABEL: Record<Observation['kind'], string> = {
 };
 
 /** 后端只有三种状态，页面不另造状态 */
-export const STATUS_LABEL: Record<ObservationStatus, string> = { new: '待处理', resolved: '已解决', ignored: '已忽略' };
-const STATUSES: ObservationStatus[] = ['new', 'resolved', 'ignored'];
+export const STATUS_LABEL: Record<ObservationStatus, string> = { new: '待处理', reviewing: '待复核', resolved: '已解决', ignored: '已忽略' };
+const STATUSES: ObservationStatus[] = ['new', 'reviewing', 'resolved', 'ignored'];
 
 const SECTION_HINT: Record<ObservationSectionKey, string> = {
   problem: '实际发生了什么、在什么条件下发生，有哪些执行记录或证据',
@@ -126,12 +126,12 @@ export function IssueList({ observations, projects, filters, onFilters }: ListPr
           <span>显示 {rows.length} 条 · 共 {observations.length} 条问题</span>
           <span className="grow" />
           <span role="status">{msg && <span className="error">{msg}</span>}</span>
-          {observations.some((o) => o.status !== 'new') && (
+          {observations.some((o) => o.status === 'resolved' || o.status === 'ignored') && (
             <button
               className="link"
               title="删除已解决和已忽略的记录；待处理的保留"
               onClick={() => {
-                const n = observations.filter((o) => o.status !== 'new').length;
+                const n = observations.filter((o) => o.status === 'resolved' || o.status === 'ignored').length;
                 if (!window.confirm(`删除 ${n} 条已解决和已忽略的问题？删除后不能恢复（仍被已应用提案引用、或刚解决的流程问题会保留）。`)) return;
                 void api('/api/observations/clear', 'POST').then(() => setMsg(null), (e: Error) => setMsg(e.message));
               }}
@@ -226,6 +226,43 @@ export function Crumb({ children }: { children: ReactNode }) {
       <span aria-hidden="true">/</span>
       <span>{children}</span>
     </nav>
+  );
+}
+
+/** 修复本问题：与页头一键修复同一套分流，不能做时直接写明原因 */
+function FixAction({ o }: { o: Observation }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ text: string; error?: boolean } | null>(null);
+  const route = fixRoute(o);
+  if (o.status !== 'new') return <small className="oi-muted">{o.status === 'reviewing' ? '修改已应用，等新任务跑过：静默期后问题仍在会自动退回待处理' : '问题已处理，无需修复'}</small>;
+  if (!route) return <small className="oi-muted">备注级记录不进入修复</small>;
+  if (route.mode === 'manual') return <small className="oi-muted">需要人工处理：{route.reason}</small>;
+  const fix = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api<{ mode: string; resolved?: boolean }>(`/api/observations/${o.id}/fix`, 'POST');
+      setMsg({
+        text:
+          r.resolved ? '已经能证明好了（任务已完成或规格已生成），直接标为已解决'
+            : route.mode === 'rerun' ? '已重新执行关联任务；跑完后核对：任务完成且那一步本身成功了，才会自动标为已解决'
+              : route.mode === 'recheck' ? '已重新生成规格；生成成功说明环境已恢复，会自动标为已解决'
+              : '已开始诊断，产出的修改会直接应用到本机；若诊断结束时队列不空闲，提案会留在优化提案页等你确认',
+      });
+    } catch (e) {
+      setMsg({ text: (e as Error).message, error: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const label = route.mode === 'rerun' ? '重新执行关联任务' : route.mode === 'recheck' ? '复查环境（重新生成规格）' : '修复本问题';
+  return (
+    <>
+      <button className="oi-btn oi-primary oi-side-btn" disabled={busy} onClick={() => void fix()}>
+        {busy ? '处理中…' : label}
+      </button>
+      {msg && <small className={msg.error ? 'error' : 'oi-ok'} role="status">{msg.text}</small>}
+    </>
   );
 }
 
@@ -341,9 +378,10 @@ export function IssueDetail({ observation: o, projects, proposals, onOpenTask }:
           </dl>
           <label htmlFor="oi-status">处理状态</label>
           <select id="oi-status" value={o.status} onChange={(e) => void changeStatus(e.target.value as ObservationStatus)}>
-            {STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
+            {STATUSES.filter((s) => s !== 'reviewing' || o.status === 'reviewing').map((s) => <option key={s} value={s} disabled={s === 'reviewing'}>{STATUS_LABEL[s]}</option>)}
           </select>
           {statusMsg && <small className={statusMsg.error ? 'error' : 'oi-ok'} role="status">{statusMsg.text}</small>}
+          <FixAction o={o} />
           {!o.issue && (
             <button className="oi-btn oi-side-btn" onClick={() => setGithubOpen(true)}>提交到 GitHub Issues</button>
           )}

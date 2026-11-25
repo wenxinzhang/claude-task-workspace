@@ -1058,3 +1058,27 @@ td.obs-actions .btn + .btn {
     position: static;
   }
 }
+/* 页头一键修复：按钮与进度说明同排，没修好的原因可展开 */
+.oi-fixall {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  max-width: 520px;
+}
+.oi-fixall-failed summary {
+  cursor: pointer;
+  color: var(--oi-muted);
+  font-size: 12px;
+}
+.oi-fixall-failed ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--oi-muted);
+}
+.oi-badge[data-state='reviewing'] {
+  background: #fbf3dc;
+  color: #8a6512;
+  border-color: transparent;
+}
