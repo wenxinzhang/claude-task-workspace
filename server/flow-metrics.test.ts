@@ -161,3 +161,38 @@ describe('flowSection', () => {
     expect(text).toContain('代码目录不存在');
   });
 });
+
+describe('computeFlowMetrics 重跑统计', () => {
+  it('重跑的花费与耗时计入阶段合计，并按路径归并次数与花费；没有记录的花费为 null', () => {
+    const m = computeFlowMetrics(
+      [
+        task({
+          evidence: {
+            implement: ev('implement', 1000, {
+              costUsd: 2,
+              reruns: [{ reason: 'no-action-retry', costUsd: 1.5, durationMs: 500, toolCalls: 0 }],
+            }),
+          },
+        }),
+        task({
+          evidence: {
+            implement: ev('implement', 1000, {
+              costUsd: 1,
+              reruns: [{ reason: 'continue-no-change', durationMs: 200, toolCalls: 3 }],
+            }),
+          },
+        }),
+      ],
+      NOW,
+    );
+    const s = m.stages[0];
+    expect(s.costUsd).toBe(4.5);
+    expect(s.costN).toBe(2);
+    expect(s.medianMs).toBe(1350);
+    expect(m.reruns).toEqual([
+      { reason: 'no-action-retry', n: 1, costUsd: 1.5 },
+      { reason: 'continue-no-change', n: 1, costUsd: null },
+    ]);
+    expect(flowSection([{ name: 'p', metrics: m }])).toContain('自动重跑');
+  });
+});

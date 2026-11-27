@@ -72,6 +72,9 @@ export interface SpecQuestion {
   suggestion?: string;
 }
 
+/** 自动多跑一轮的原因：体检按路径归并重跑次数与花费 */
+export type RerunReason = 'no-action-retry' | 'continue-no-change' | 'resume-failed';
+
 /** 一次代理会话留下的事实，全部来自事件流，不取自代理的自述 */
 export interface RunEvidence {
   stage: Stage | 'preflight';
@@ -89,6 +92,8 @@ export interface RunEvidence {
   costUsd?: number;
   durationMs: number;
   at: number;
+  /** 本阶段自动多跑的轮次（被舍弃的那几轮）的事实：体检把它们的花费与耗时计入本阶段合计，并按路径归并次数 */
+  reruns?: { reason: RerunReason; costUsd?: number; durationMs: number; toolCalls: number | null }[];
 }
 
 export type ItemResult = 'pass' | 'fail' | 'unverified';

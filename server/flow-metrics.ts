@@ -1,4 +1,4 @@
-import type { Stage, Task, TaskStatus } from './types.ts';
+import type { RerunReason, Stage, Task, TaskStatus } from './types.ts';
 
 /** 单个阶段的耗时与成本统计：只统计带事实（evidence）的任务，没有样本的阶段不出现 */
 export interface StageMetric {
@@ -28,6 +28,8 @@ export interface FlowMetrics {
   backlog: { status: TaskStatus; n: number; oldestMs: number }[];
   /** 停在待确认且生成规格失败的任务：按失败原因归并，数量多的在前 */
   analyzeStuck: { n: number; reasons: { reason: string; n: number }[] };
+  /** 自动多跑的轮次：按路径计次数与花费（花费已计入阶段合计），分清多少钱花在重跑上；没有重跑时为空数组 */
+  reruns: { reason: RerunReason; n: number; costUsd: number | null }[];
 }
 
 /** 流程问题草稿：key 是稳定去重键，同一问题未处理时不重复入台账 */
@@ -61,8 +63,12 @@ export function computeFlowMetrics(tasks: Task[], now: number): FlowMetrics {
   for (const stage of STAGES) {
     const evs = tasks.map((t) => t.evidence?.[stage]).filter((e): e is NonNullable<typeof e> => !!e && typeof e.durationMs === 'number');
     if (!evs.length) continue;
-    const durations = evs.map((e) => e.durationMs).sort((a, b) => a - b);
-    const costs = evs.map((e) => e.costUsd).filter((c): c is number => typeof c === 'number');
+    // 自动多跑的轮次计入本阶段的耗时与花费：此前只保留最后一轮的证据，重跑的时间与花费在体检里整体缺失
+    const durations = evs.map((e) => e.durationMs + (e.reruns ?? []).reduce((x, r) => x + r.durationMs, 0)).sort((a, b) => a - b);
+    const costs = evs
+      .map((e) => [e.costUsd, ...(e.reruns ?? []).map((r) => r.costUsd)].filter((c): c is number => typeof c === 'number'))
+      .filter((parts) => parts.length > 0)
+      .map((parts) => parts.reduce((x, y) => x + y, 0));
     const calls = evs.map((e) => e.toolCalls).filter((c): c is number => typeof c === 'number');
     const sum = (a: number[]) => a.reduce((x, y) => x + y, 0);
     stages.push({
@@ -109,7 +115,22 @@ export function computeFlowMetrics(tasks: Task[], now: number): FlowMetrics {
   }
   const reasons = [...reasonCounts.entries()].map(([reason, n]) => ({ reason, n })).sort((a, b) => b.n - a.n);
   const analyzeStuck = { n: reasons.reduce((x, r) => x + r.n, 0), reasons };
-  return { at: now, taskCount: tasks.length, stages, outcomes, holdReasons, backlog, analyzeStuck };
+  // 重跑轮次：按原因计数；花费只对有记录的求和，一条都没有时为 null（未知，不等于 0）
+  const rerunAgg = new Map<RerunReason, { n: number; costs: number[] }>();
+  for (const t of tasks) {
+    for (const stage of STAGES) {
+      for (const r of t.evidence?.[stage]?.reruns ?? []) {
+        const agg = rerunAgg.get(r.reason) ?? { n: 0, costs: [] };
+        agg.n++;
+        if (typeof r.costUsd === 'number') agg.costs.push(r.costUsd);
+        rerunAgg.set(r.reason, agg);
+      }
+    }
+  }
+  const reruns = [...rerunAgg.entries()]
+    .map(([reason, { n, costs }]) => ({ reason, n, costUsd: costs.length ? Math.round(costs.reduce((x, y) => x + y, 0) * 100) / 100 : null }))
+    .sort((a, b) => b.n - a.n);
+  return { at: now, taskCount: tasks.length, stages, outcomes, holdReasons, backlog, analyzeStuck, reruns };
 }
 
 /** 从一个项目的流程指标判出流程问题：只按可数的事实判，不做主观评价 */
@@ -139,6 +160,7 @@ export function flowFindings(projectId: string, m: FlowMetrics): FlowFindingDraf
 }
 
 const STAGE_NAME: Record<Stage, string> = { analysis: '理解', implement: '实现', verify: '验证' };
+const RERUN_NAME: Record<RerunReason, string> = { 'no-action-retry': '零工具调用重试', 'continue-no-change': '无改动接续', 'resume-failed': '接续失败重跑' };
 const STATUS_NAME: Partial<Record<TaskStatus, string>> = { pending_confirm: '待确认', todo: '待修改', review: '待验证', blocked: '异常' };
 const sec = (ms: number) => `${Math.round(ms / 1000)} 秒`;
 const hours = (ms: number) => `${(ms / 3_600_000).toFixed(1)} 小时`;
@@ -154,6 +176,7 @@ export function flowSection(projects: { name: string; metrics: FlowMetrics }[]):
         const calls = s.avgToolCalls === null ? '工具调用未记录' : `平均 ${s.avgToolCalls} 次工具调用`;
         lines.push(`- ${STAGE_NAME[s.stage]}阶段：${s.n} 个样本，耗时中位 ${sec(s.medianMs)}、最长 ${sec(s.maxMs)}，${calls}，${cost}`);
       }
+      if (m.reruns.length) lines.push(`- 自动重跑（花费已计入阶段合计）：${m.reruns.map((r) => `${RERUN_NAME[r.reason]} ${r.n} 次，${r.costUsd === null ? '花费未记录' : `花费 ${r.costUsd} 美元`}`).join('；')}`);
       const o = m.outcomes;
       if (o.gated) lines.push(`- 门禁结论（每个任务最近一次）${o.gated} 个：通过 ${o.pass}，需要人工验收 ${o.unverified}，未通过 ${o.fail}`);
       if (m.holdReasons.length) lines.push(`- 转人工的原因（最近一次门禁的 hold，按任务计）：${m.holdReasons.slice(0, 5).map((r) => `${r.n} 个：${r.reason}`).join('；')}`);

@@ -7,8 +7,10 @@ export function History({ project, tasks, onOpen }: { project: Project; tasks: T
   const ran = tasks.filter((t) => t.evidence?.implement).sort((a, b) => b.updatedAt - a.updatedAt);
   const stages = (t: TaskBrief) => [t.evidence?.implement, t.evidence?.verify].filter((e): e is RunEvidence => !!e);
   const sum = (t: TaskBrief, pick: (e: RunEvidence) => number) => stages(t).reduce((n, e) => n + pick(e), 0);
+  // 自动多跑的轮次也是本阶段的花费：此前只计最后一轮，重跑花费被漏掉
+  const costOf = (e: RunEvidence) => (e.costUsd ?? 0) + (e.reruns ?? []).reduce((x, r) => x + (r.costUsd ?? 0), 0);
 
-  const totalCost = ran.reduce((n, t) => n + sum(t, (e) => e.costUsd ?? 0), 0);
+  const totalCost = ran.reduce((n, t) => n + sum(t, costOf), 0);
   const totalMs = ran.reduce((n, t) => n + sum(t, (e) => e.durationMs), 0);
   const passed = ran.filter((t) => t.gate?.verdict === 'pass').length;
   const manual = ran.filter((t) => t.gate?.verdict === 'unverified').length;
@@ -81,7 +83,7 @@ export function History({ project, tasks, onOpen }: { project: Project; tasks: T
                     </td>
                     <td>{verdict === 'pass' ? '通过' : verdict === 'unverified' ? '需要人工验收' : verdict === 'fail' ? '未通过' : '没有结论'}</td>
                     <td className="num">{fmtDuration(sum(t, (e) => e.durationMs))}</td>
-                    <td className="num">${sum(t, (e) => e.costUsd ?? 0).toFixed(2)}</td>
+                    <td className="num">${sum(t, costOf).toFixed(2)}</td>
                     <td className="num">{calls}</td>
                     <td className="num">{sum(t, (e) => e.denials.length)}</td>
                     <td className="mono">{t.commit?.hash ?? '未提交'}</td>

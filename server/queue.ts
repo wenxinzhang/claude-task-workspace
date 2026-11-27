@@ -410,11 +410,14 @@ export class Queue extends EventEmitter {
       });
       // 只有 Claude Code 能接续会话：代理还记得任务和自己的改动，只需要给最新的指令
       const resume = follow && exec.provider === 'claude' ? priorSession : undefined;
+      // 自动多跑的轮次的事实：随最终一轮的证据落盘，体检据此按路径统计重跑次数与花费
+      const reruns: NonNullable<RunEvidence['reruns']> = [];
       let impl = resume
         ? await this.run({ ...fresh(), resume, prompt: followUpPrompt(this.store.get(id)!, notes.slice(-1), { resumed: true, extra: exec.extraPrompt }) + scratchSection(scratch) })
         : await this.run(fresh());
       if (resume && !impl.ok && impl.evidence.toolCalls === 0 && !signal.aborted) {
         cost += impl.evidence.costUsd ?? 0;
+        reruns.push({ reason: 'resume-failed', costUsd: impl.evidence.costUsd, durationMs: impl.evidence.durationMs, toolCalls: impl.evidence.toolCalls });
         log('无法接续上一轮的会话，改为新开会话继续');
         impl = await this.run(fresh());
       }
@@ -424,6 +427,7 @@ export class Queue extends EventEmitter {
       if (!follow && shouldRetryNoAction(impl) && !signal.aborted) {
         retried = true;
         cost += impl.evidence.costUsd ?? 0;
+        reruns.push({ reason: 'no-action-retry', costUsd: impl.evidence.costUsd, durationMs: impl.evidence.durationMs, toolCalls: impl.evidence.toolCalls });
         log('实现会话没有调用任何工具就结束了（可能误判任务缺失），去掉历史/记忆/skill 段落，用精简提示词自动重试一次');
         const req = fresh();
         // 重试要改变条件而不是原样重跑：历史任务、项目记忆、skill 段落是最可能淹没任务正文的部分。
@@ -444,14 +448,16 @@ export class Queue extends EventEmitter {
           // 而第一次其实读过代码。保留哪次的结果，哪次的花费就留给后面统一计入；另一次在这里计入，避免重复或漏算
           if ((next.evidence.toolCalls ?? 0) > 0) {
             cost += impl.evidence.costUsd ?? 0;
+            reruns.push({ reason: 'continue-no-change', costUsd: impl.evidence.costUsd, durationMs: impl.evidence.durationMs, toolCalls: impl.evidence.toolCalls });
             impl = next;
           } else {
             cost += next.evidence.costUsd ?? 0;
+            reruns.push({ reason: 'continue-no-change', costUsd: next.evidence.costUsd, durationMs: next.evidence.durationMs, toolCalls: next.evidence.toolCalls });
             log(next.ok ? '接续会话没有调用任何工具就结束了，按第一次的结果交由门禁判定' : '无法接续实现会话，按第一次的结果交由门禁判定');
           }
         }
       }
-      this.saveEvidence(id, 'implement', impl.evidence);
+      this.saveEvidence(id, 'implement', reruns.length ? { ...impl.evidence, reruns } : impl.evidence);
       cost += impl.evidence.costUsd ?? 0;
       log(`实现阶段：${evidenceLine(impl.evidence)}`);
       // 中途失败或被手动停止，也把已经改动的文件记到这个任务上：重试时它们仍算本任务的改动。
@@ -690,7 +696,7 @@ export class Queue extends EventEmitter {
       const res = await this.run({
         stage: 'analysis',
         access: 'read',
-        prompt: analysisPrompt(task, files, history + this.skills(exec, 'analysis', log) + verifySection(exec)),
+        prompt: analysisPrompt(task, files, history + this.skills(exec, 'analysis', log) + verifySection(exec), exec.analyzeTimeoutMinutes),
         cwd: workdir,
         exec,
         skills: exec.provider === 'claude' ? stageSkills(exec, 'analysis') : [],

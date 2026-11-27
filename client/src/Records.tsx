@@ -169,7 +169,7 @@ function AiDetail({ row, reviewLabel, onOpenTask }: { row: Row; reviewLabel: str
   const meta = STATUS_META[row.status];
   const steps = record?.steps ?? [];
   const failReason = record?.error ?? task?.error;
-  const cost = [task?.evidence?.analysis, task?.evidence?.implement, task?.evidence?.verify].reduce((n, e) => n + (e?.costUsd ?? 0), 0);
+  const cost = [task?.evidence?.analysis, task?.evidence?.implement, task?.evidence?.verify].reduce((n, e) => n + (e?.costUsd ?? 0) + (e?.reruns ?? []).reduce((x, r) => x + (r.costUsd ?? 0), 0), 0);
 
   const rerun = async () => {
     if (!taskId) return;

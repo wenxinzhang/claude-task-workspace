@@ -1,6 +1,7 @@
 import { fmtDuration, STAGE_LABEL, type FlowMetrics, type Project } from './api.ts';
 
 const BACKLOG_LABEL: Record<string, string> = { pending_confirm: '待确认', todo: '待修改', review: '待验证', blocked: '异常' };
+const RERUN_LABEL: Record<string, string> = { 'no-action-retry': '零工具调用重试', 'continue-no-change': '无改动接续', 'resume-failed': '接续失败' };
 const hours = (ms: number) => (ms >= 3_600_000 ? `${(ms / 3_600_000).toFixed(1)} 小时` : fmtDuration(ms));
 
 interface Props {
@@ -58,6 +59,11 @@ export function FlowHealth({ flow, projects }: Props) {
               ))}
               {m.analyzeStuck.reasons.slice(0, 2).map((r) => (
                 <span key={r.reason} className="flow-fact warn" title={r.reason}>{r.n} 个任务生成规格失败：{r.reason}</span>
+              ))}
+              {m.reruns.map((r) => (
+                <span key={r.reason} className="flow-fact warn">
+                  自动重跑 {r.n} 次（{RERUN_LABEL[r.reason] ?? r.reason}）{r.costUsd === null ? '，花费未记录' : `，花费 $${r.costUsd.toFixed(2)}`}
+                </span>
               ))}
               {m.holdReasons.slice(0, 3).map((r) => (
                 <span key={r.reason} className="flow-fact warn" title={r.reason}>{r.n} 个任务转人工：{r.reason}</span>
