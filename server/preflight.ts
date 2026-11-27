@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type { AgentRequest, AgentResult } from './agent.ts';
 import { snapshot } from './git.ts';
 import { commandExecutables } from './shared.ts';
+import { detectVerifyKit } from './verifykit.ts';
 import type { Preflight, Project } from './types.ts';
 
 const PROBE_SCHEMA = {
@@ -50,10 +51,16 @@ export async function runPreflight(
   }
   if (!(await snapshot(workdir))) notes.push('代码目录不是 git 仓库：无法核对每个任务的改动，任务都会进入待验证，也不会自动提交');
 
-  // 配置了验证命令：试跑其中用到的每个程序；没配置时只试一条通用命令
+  // 配置了验证命令：试跑其中用到的每个程序；没配置时按代码目录检测出的技术栈试跑建议命令用到的程序，
+  // 让「白名单只放行 npm/node 而项目其实是 Python」这类错配在开工前暴露，而不是每个任务验证时被权限拒绝再转人工
   const configured = commandExecutables(exec.verifyCommands).slice(0, 4);
-  const probes = configured.length ? configured.map(versionCommand) : ['node --version'];
-  if (!configured.length) notes.push('项目没有配置验证命令（项目管理 → 配置 → 执行设置）：代理只能靠读代码验证，需要执行命令的验收项会转为人工确认。可在「项目设置 → 执行设置」里检测并采用建议的验证命令');
+  const kit = configured.length ? null : detectVerifyKit(workdir, exec.allowedTools);
+  const detected = kit ? commandExecutables(kit.commands.join('\n')).slice(0, 4) : [];
+  const probes = configured.length ? configured.map(versionCommand) : detected.length ? detected.map(versionCommand) : ['node --version'];
+  if (!configured.length) {
+    notes.push('项目没有配置验证命令（项目管理 → 配置 → 执行设置）：代理只能靠读代码验证，需要执行命令的验收项会转为人工确认。可在「项目设置 → 执行设置」里检测并采用建议的验证命令');
+    if (kit?.missingTools.length) notes.push(`建议的验证命令用到的程序尚未放行：${kit.missingTools.join('、')}。不采用建议或不把它们加进「允许的工具」，实现与验证时执行命令会被权限拒绝，对应验收项只能转人工`);
+  }
 
   // 探针文件放在临时目录，不弄脏代码目录；访问方式与任务附件相同
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-preflight-'));

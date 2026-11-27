@@ -4,7 +4,7 @@ import { allowedExecutables, effectiveAllowedTools, textLines } from './shared.t
 import type { Criterion, ExecConfig, Task, TestEnv } from './types.ts';
 
 /** 理解阶段：只读代码，产出结构化规格（结构由 SPEC_SCHEMA 约束） */
-export function analysisPrompt(task: Pick<Task, 'title' | 'description'>, files?: LocalAttachment[], knowledge = ''): string {
+export function analysisPrompt(task: Pick<Task, 'title' | 'description'>, files?: LocalAttachment[], knowledge = '', timeoutMinutes?: number): string {
   return `你是资深工程师，正在为下面这个任务写开发前的规格。只阅读代码，不要修改任何文件。
 
 ## 任务标题
@@ -15,7 +15,7 @@ ${task.description || '（无）'}${attachmentSection(files)}${knowledge}
 
 ## 要求
 先读代码再下结论：涉及的文件和根因都要来自你实际读到的代码，不要只凭标题推测。读不到代码时不要编写规格，直接说明原因。
-读到足以确定根因和改动范围就输出，不必把相关代码全部读完：这一步有时间上限，超时会整段作废重来。
+读到足以确定根因和改动范围就输出，不必把相关代码全部读完：这一步有时间上限${timeoutMinutes ? `（约 ${timeoutMinutes} 分钟）` : ''}，超时会整段作废重来。确认不了根因时也要先输出，rootCause 写「未确认」和原因，不要为了读完所有代码而拖到超时。
 用简体中文，按给定的结构输出。规格要让人一分钟内看完并确认：只写结论，不写推导过程。各字段含义：
 - goal：一句话说明要做成什么
 - rootCause：不超过三句。缺陷的根因，指到具体文件和位置；需求类任务写现状。没能确认时写明「未确认」和原因
